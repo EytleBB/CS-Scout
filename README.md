@@ -55,10 +55,6 @@ output/tile_{domain}_{rtype}.png  +  analysis_summary.json
 # 安装依赖
 pip install flask numpy pandas matplotlib scipy shapely demoparser2 requests
 
-# 配置
-cp server/config.example.py server/config.py
-# 编辑 config.py，填入 SECRET_KEY、路径等
-
 # 启动
 cd server
 python web_server.py
@@ -66,15 +62,10 @@ python web_server.py
 
 访问 `http://<服务器IP>:5000`，确保云服务商安全组放通 5000 端口。
 
-### config.py 示例
+默认访问密钥为 `csai_2026`。如需自定义，设置环境变量即可，无需修改任何文件：
 
-```python
-HOST = "0.0.0.0"
-PORT = 5000
-SECRET_KEY = "your_secret_key"
-BASE_DIR = "/home/ubuntu/server"
-OUTPUT_DIR = BASE_DIR + "/output"
-DEMO_DIR  = BASE_DIR + "/demos_opponents"
+```bash
+CSAI_SECRET_KEY=your_secret_key python web_server.py
 ```
 
 ## 当前限制 / Roadmap
