@@ -62,11 +62,6 @@ python web_server.py
 
 访问 `http://<服务器IP>:5000`，确保云服务商安全组放通 5000 端口。
 
-默认访问密钥为 `csai_2026`。如需自定义，设置环境变量即可，无需修改任何文件：
-
-```bash
-CSAI_SECRET_KEY=your_secret_key python web_server.py
-```
 
 ## 当前限制 / Roadmap
 
@@ -85,7 +80,7 @@ CSAI_SECRET_KEY=your_secret_key python web_server.py
 
 - 仅分析 **5E 平台排位** demo（`match_type=9`），其他模式通常无 demo 下载链接
 - 无 Mirage 排位记录的玩家会在结果中标记为"分析失败"
-- demo 文件 50–200 MB，服务端需要足够磁盘空间（默认上限 30 GB，超出自动清理至 10 GB）
+- demo 文件 200-500 MB，服务端需要足够磁盘空间（默认上限 30 GB，超出自动清理至 10 GB）
 
 ---
 
