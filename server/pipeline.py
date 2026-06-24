@@ -108,12 +108,16 @@ def download_and_extract(match_id, demo_url, dest_dir):
         log.info(f"Reusing cached demo: {match_id} ({len(cached)} file(s))")
         return cached
 
+    # The arena-list demo_url often 404s (stale CDN subdomain); resolve the
+    # authoritative URL from gate match-detail, falling back to the arena one.
+    real_url = api_client.get_demo_url(match_id) or demo_url
+
     os.makedirs(dest_dir, exist_ok=True)
     zip_path = os.path.join(dest_dir, f"{match_id}.zip")
 
     try:
         log.info(f"Downloading: {match_id}")
-        api_client.download_demo(demo_url, zip_path)
+        api_client.download_demo(real_url, zip_path)
 
         dem_files = []
         with zipfile.ZipFile(zip_path, "r") as zf:

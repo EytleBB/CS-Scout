@@ -35,6 +35,21 @@ def get_match_detail(match_id):
     return _get(url)
 
 
+def get_demo_url(match_code):
+    """Authoritative demo zip URL from gate match-detail.
+
+    The arena match-list `demo_url` often points at a stale CDN subdomain that
+    404s (5E changed arena CDN routing); the gate match-detail `main.demo_url`
+    is the correct Tencent-COS URL. Returns None on failure / missing.
+    """
+    try:
+        d = get_match_detail(match_code)
+        return d.get("main", {}).get("demo_url") or None
+    except Exception as e:
+        log.warning(f"get_demo_url({match_code}) failed: {e}")
+        return None
+
+
 def _extract_players(match_detail):
     players = []
     for group_key, group_num in [("group_1", 1), ("group_2", 2)]:
