@@ -4,10 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-CS-Scout: CS2 demo analysis and tactical visualization system for the Mirage map. Two subsystems:
+CS-Scout 2.0: CS2 demo analysis and **multi-round replay** visualization. The server
+only parses demos and emits per-player JSON; the browser renders an animated canvas
+replay. Supports the 7 active-duty maps (not just Mirage). Two subsystems:
 
-1. **Web server** (`server/`) — Flask VPS server that accepts 5E usernames, auto-fetches demos, and serves CT-side heatmaps + combat stats to a browser UI
-2. **Local tools** (`tools/`) — standalone scripts for offline demo analysis, heatmap viewing, zone editing
+1. **Web server** (`server/`) — Flask VPS server that accepts 5E usernames + a map,
+   auto-fetches demos, parses them into per-player replay JSON, and serves a canvas UI.
+2. **Local tools** (`tools/`, `D:/CSAI/` root) — legacy offline scripts (heatmap viewer,
+   zone editor, calibrator) retained from 1.0; not part of the 2.0 server path.
 
 ---
 
@@ -16,247 +20,197 @@ CS-Scout: CS2 demo analysis and tactical visualization system for the Mirage map
 ### Architecture
 
 ```
-Browser UI (index.html)
-    │  POST /api/analyze_by_names  {usernames[], max_demos, key}
+Browser UI (index.html + static/app.js + static/replay.js)
+    │  POST /api/analyze  {usernames[], map, max_demos, key}
     ▼
 web_server.py  (Flask, port 5000)
-    │  background thread
+    │  background thread → pipeline.run(usernames, map_name, ...)
+    ├── [Download thread]  search_player → get_demos_by_domain(map) → get_steamid_for_player → download_and_extract
+    └── [Main thread]      parse.parse_demo → combat.parse_combat_stats → player_json.build
     ▼
-pipeline.run_by_usernames()
-    ├── [Download thread]  search_player → get_mirage_demos_by_domain → get_steamid_for_player → download_and_extract
-    └── [Main thread]      parse_demo → generate_heatmap → parse_combat_stats → generate_zone_stats
+output/player_{domain}.json  +  output/analysis_summary.json
     ▼
-output/heatmap_{domain}.png  +  output/tile_{domain}_{rtype}.png  +  output/analysis_summary.json
+Browser fetches /api/player/<domain> → ReplayPlayer canvas (9s loop, CT/T × Pistol/Full/Eco)
 ```
+
+### Module Map (`server/`)
+
+| Module | Role |
+|--------|------|
+| `maps.py` | Runtime map loader: `load_map(name)`, `game_to_pixel(transform,gx,gy)`, `available_maps()` |
+| `setup_maps.py` | One-time: pull radar.png + transform from awpy into `data/maps/<map>/` |
+| `parse.py` | `get_round_table`, `classify_rounds` (3-type CT/T), `parse_positions`, `parse_grenades_for_rounds`, `parse_demo` (merger) |
+| `combat.py` | `parse_combat_stats` (K/D + CT AWP), `aggregate_combat_stats` |
+| `player_json.py` | `build(...)` — assembles per-player JSON from rounds + combat |
+| `pipeline.py` | `run(usernames, map_name, ...)`, demo dedup index, `cleanup_demos`, `download_and_extract`, `assemble_round_offset` |
+| `api_client.py` | 5E scraping: `search_player`, `get_demos_by_domain(domain, map_name, count)`, `get_steamid_for_player`, `download_demo` |
+| `web_server.py` | Flask endpoints + background runner |
 
 ### 5E Platform API (api_client.py)
 
-Two base URLs:
-- `https://arena.5eplay.com` — player search, match list with demo URLs
-- `https://gate.5eplay.com` — match detail (steamid extraction, old UUID flow)
+Two base URLs: `https://arena.5eplay.com` (player search, match list) and
+`https://gate.5eplay.com` (match detail / steamid extraction).
 
-Key functions:
-- `search_player(username)` → `(domain, matched_username)` — domain is URL-safe ID like `0705cupvvglq`
-- `get_mirage_demos_by_domain(domain, count=10)` → `[{match_code, demo_url}]`
-  - Auto-detects match_type: tries **`?match_type=9` first**, then no-params / `?match_type=1/8`
-  - **Critical**: `match_type=9` is ranked mode and always has `demo_url`. No-params returns matches without `demo_url` for many players — trying it first was a bug that caused "无 Mirage demo 可用" for players like emooQAQ, 1015_.
-  - Deduplicates across pages via `seen_codes` set
-  - Filters for `map == "de_mirage"` with non-empty `demo_url`
-- `get_steamid_for_player(match_code, username)` — extracts steamid from match detail by username match
-- `download_demo(url, path)` — streams zip to disk
+- `search_player(username)` → `(domain, matched_username)` — domain is a URL-safe ID like `0705cupvvglq`.
+- `get_demos_by_domain(domain, map_name, count=10)` → `[{match_code, demo_url}]`
+  - Tries **`?match_type=9` first** (ranked, always has `demo_url`), then no-params / `?match_type=1/8`.
+  - Filters for `map == map_name` with non-empty `demo_url`; dedups across pages via `seen_codes`.
+- `get_steamid_for_player(match_code, username)` — matches steamid by username string.
 
-### Pipeline Flow (pipeline.py)
+### Pipeline Flow (pipeline.py `run`)
 
-`run_by_usernames` uses a **demo-level pipeline**: the download thread puts each `.dem` file into the queue immediately after extraction, so the main thread starts parsing it while the *next* demo is still downloading.
-
-```
-Download thread: [dl dem A1] → [dl dem A2] → [dl dem B1] → ...
-Main thread:               ↘ [parse A1] → [parse A2] → [parse B1] → heatmap A → ...
-```
-
-Queue `maxsize=10` (demo-level items). Queue item types:
-- `{"type": "demo", "i", "username", "domain", "steamid", "demos_found", "dem_file", "dem_idx"}`
-- `{"type": "player_done", "i", "username", "domain", "steamid", "demos_found"}`
-- `{"type": "player_failed", "i", "username", "reason"}`
+Demo-level pipeline: the download thread enqueues each `.dem` immediately after extraction
+so the main thread parses it while the next downloads. Queue `maxsize=10`. Item types:
+- `{"type":"demo", "i","username","domain","steamid","demos_found","dem_file","dem_idx"}`
+- `{"type":"player_done", "i","username","domain","steamid","demos_found"}`
+- `{"type":"player_failed", "i","username","reason"}`
 - `None` — sentinel
 
-Heatmap and combat stats are computed in the main thread when `player_done` is received.
+Per-player progress steps (via `progress_cb(i, total, name, step, msg)`):
+`(0)` search → `(1)` fetch demo list for map → `(2)` resolve steamid →
+`(3)` download demo N → `(4)` parse demo N → `(5)` build replay JSON.
 
-Per-player pipeline steps (reported via progress_cb):
-1. `(0/5)` Search username on 5E arena
-2. `(1/5)` Fetch Mirage demo list (auto-detect match_type, paginate)
-3. `(2/5)` Resolve steamid from match detail
-4. `(3/5)` Download demo N — per-demo as they land
-5. `(4/5)` Parse demo N — immediately after each download
-6. `(5/5)` Generate heatmap (once all demos parsed)
+**Round dedup across demos**: `assemble_round_offset(records, dem_idx)` offsets each demo's
+`official_num` by `dem_idx*1000` so round IDs from different demos don't collide.
 
-### Demo Deduplication Index
+**Demo dedup index**: `download_and_extract` checks a global in-memory + on-disk index
+(`server/demos_opponents/.demo_index.json` → `{match_id: [dem_path,...]}`) before downloading;
+grouped opponents often share match IDs, so this avoids re-downloading 100–200 MB demos.
 
-`download_and_extract(match_id, demo_url, dest_dir)` checks a **global in-memory + on-disk index** before downloading:
+**Disk cleanup**: `cleanup_demos(demo_dir, limit_gb=30, target_gb=10)` runs once per `run`;
+if total `.dem` size > 30 GB, deletes oldest files until ≤ 10 GB.
 
-- Index file: `server/demos_opponents/.demo_index.json` — `{match_id: [dem_path, ...]}`
-- Loaded once on first call, updated after each successful download
-- On lookup, invalid (deleted) paths are pruned automatically
-- **Why**: 5 grouped opponents often share many of the same match IDs — without dedup, the same 100–200 MB demo would be downloaded 5×
+### Map Data Layer (maps.py / setup_maps.py)
 
-### Demo Disk Cleanup
+- `data/maps/<map>/` holds `radar.png` + `meta.json` (`{"transform":{pos_x,pos_y,scale}}`).
+- Generated at deploy time by `python setup_maps.py` (needs `awpy` + `awpy get maps`); **not committed** (large binaries).
+- `game_to_pixel(transform, gx, gy)` = `((gx-pos_x)/scale, (pos_y-gy)/scale)` — Y axis inverted.
+- `available_maps()` lists dirs under `MAPS_DIR` that contain `meta.json`.
 
-`cleanup_demos(demo_dir, limit_gb=30, target_gb=10)`:
-- Called once at the start of each `run_by_usernames` invocation
-- If total `.dem` size > 30 GB: deletes oldest files (by mtime) until total ≤ 10 GB
+### Round Classification (parse.classify_rounds) — 3 types, CT and T
 
-### Round Number Deduplication
+At each `round_freeze_end`, for the target steamid: `side` ∈ {CT, T}. Economy:
+- **Pistol** — first round of each half-segment (side flips into a new half).
+- **Full** — team-avg `current_equip_value` ≥ `EQ_FULL_BUY` (3800).
+- **Eco** — otherwise. (No Force Buy in 2.0.)
 
-When combining records from multiple demos, round numbers collide (all start from 1). Fix: offset each demo's rounds by `i * 1000`:
-```python
-for j, dem in enumerate(dem_files):
-    records = parse_demo(dem, steamid, zones)
-    for rec in records:
-        rec["round"] += j * 1000
-```
+### Position Sampling (parse.parse_positions)
 
-### Heatmap Generation (generate_heatmap)
+Samples target X/Y every `SAMPLE_EVERY=8` ticks across `[fe, fe+WINDOW_S]` (`WINDOW_S=45`s,
+TICK_RATE=64 → ~8 Hz). Per-round `path = [[t, x, y], ...]`, `t` relative to freeze_end, game coords.
 
-- **Output**: saves 4 individual tile images (`tile_{domain}_{rtype}.png`) + a combined 2×2 overview image (`heatmap_{domain}.png`). Returns `tile_paths` dict.
-- **Atomic write**: saves to `output_path + ".tmp"`, then `os.replace()`. Must pass `format="png"` explicitly to `fig.savefig()`.
-- **Gaussian sigma**: `max(3, 7 - n_rounds // 20)` — small min (3 px) for precise positioning
-- **Gamma correction**: `grid = np.power(grid, 0.55)` — boosts faint low-density areas
-- **Alpha ramp**: `np.linspace(0.02, 0.88, base.N)` — floor of 0.02 keeps all positions visible
-- **vmin**: `0.005` — shows more of the heatmap range
-- **Per-round normalization**: each round contributes weight 1.0 regardless of tick count (because window end varies with first kill timing)
-- **CJK font**: at startup, searches for system CJK fonts. Install `fonts-noto-cjk` on VPS for proper CJK rendering.
+### Grenade Extraction (parse.parse_grenades_for_rounds)
 
-### Combat Stats (parse_combat_stats / aggregate_combat_stats)
+Only `*Projectile` rows (bare-inventory rows have NaN x/y → dropped), target's throws, landing
+in `[0, WINDOW_S]`. Per grenade: `{type, throw_t, land_t, arc:[[t,x,y]], land:[x,y], expire_t}`.
+Types: smoke/flash/he/molotov/decoy. Durations: smoke 18s, molotov 7s, decoy 15s, flash 0.5s, he 0.3s.
 
-**K/D** — from demo scoreboard (global, both sides, no CT filter):
-- Reads `kills_total` and `deaths_total` tick fields at the last `round_end` tick
-- Per-demo K/D computed; `aggregate_combat_stats` averages across demos
-- **Why global**: scoreboard K/D is clean and directly comparable; CT-only K/D was inaccurate
+### Combat Stats (combat.py)
 
-**AWP Rate** — CT-side AWP kills / CT-side total kills:
-- Filters `player_death` events to CT rounds only (using `fe_tick`/`end_tick` from `classify_rounds`)
-- AWP kills = deaths where `attacker_steamid == target` and `weapon in SNIPER_EVENT_NAMES`
-- `SNIPER_EVENT_NAMES = {"awp", "ssg08", "g3sg1", "scar20"}` — plain event weapon names
-- Aggregated as: `sum(awp_kills) / sum(ct_kills)` across all demos
+- **K/D** — global scoreboard: `kills_total`/`deaths_total` at last `round_end` tick; averaged across demos.
+- **AWP rate** — CT-side AWP kills / CT-side total kills. CT rounds via `classify_rounds` `fe_tick`/`end_tick`.
+  `SNIPER_EVENT_NAMES = {"awp","ssg08","g3sg1","scar20"}` (plain event `weapon` names).
+  Aggregated as `sum(awp_kills)/sum(ct_kills)`.
 
-**ADR removed** — `dmg_health` in CS2 is uncapped raw bullet damage (AWP headshot = 446+), making accurate ADR calculation unreliable. Field removed from pipeline and UI.
+### Endpoints (web_server.py)
 
-### State & API Endpoints
+- `POST /api/analyze` — `{usernames[], map, max_demos, key}`. Validates key (403), usernames (400),
+  ≤5 players (400), map present (400), not already running (409).
+- `GET /api/status` — full `state` dict (polled every 2s). `state` includes `"map"`.
+- `GET /api/maps` — `{"maps": [...]}` from `available_maps()`.
+- `GET /api/player/<domain>` — that player's `player_{domain}.json` (404 if missing).
+- `GET /api/results` — raw `analysis_summary.json` (no path normalization in 2.0).
+- `GET /output/<file>` — serves output JSON. `GET /maps/<path>` — serves radar from `MAPS_DIR`.
+- `GET /` — `index.html`.
 
-`web_server.py` global `state` dict (protected by `state_lock`):
-```python
-state = {
-    "status":        "idle",   # idle / running / done / error
-    "message":       "",
-    "progress":      [],       # [{id, step, msg}, ...]
-    "results":       [],       # successful player results
-    "failed":        [],       # [{username, reason}, ...]
-    "total_players": 0,
-    "max_demos":     10,
-}
-```
+### JSON Contract
 
-Endpoints:
-- `POST /api/analyze_by_names` — main entry: `{usernames[], max_demos, key}`
-- `GET  /api/status` — returns full state dict (polled every 2s by frontend)
-- `GET  /api/results` — loads `analysis_summary.json` from disk
-- `GET  /output/<file>` — serves heatmap PNGs
-- `GET  /` — serves `index.html`
-
-### analysis_summary.json Format (current)
-
+`output/player_{domain}.json`:
 ```json
 {
-  "max_demos": 10,
-  "failed": [{"username": "X", "reason": "..."}],
-  "results": [
-    {
-      "username": "...", "domain": "...",
-      "heatmap": "heatmap_{domain}.png",
-      "tiles": {
-        "Full Buy": "tile_{domain}_fullbuy.png",
-        "Force Buy": "tile_{domain}_forcebuy.png",
-        "Eco": "tile_{domain}_eco.png",
-        "Pistol": "tile_{domain}_pistol.png"
-      },
-      "zone_stats": {...},
-      "combat_stats": {"kd": 1.23, "awp_rate": 45.0},
-      "demos_found": 5, "demo_count": 5,
-      "record_count": 430, "round_count": 47
-    }
+  "username":"...", "domain":"...", "steamid":"765...",
+  "map":"de_mirage",
+  "transform":{"pos_x":-3230.0,"pos_y":1713.0,"scale":5.0},
+  "radar":"/maps/de_mirage/radar.png",
+  "combat_stats":{"kd":1.23,"awp_rate":45.0},
+  "demos_found":6, "round_count":47,
+  "rounds":[
+    {"side":"CT","rtype":"Full","round_id":1003,
+     "path":[[0.0,-1200.0,340.0],[0.125,-1190.0,352.0]],
+     "grenades":[{"type":"smoke","throw_t":8.1,"land_t":9.4,
+                  "arc":[[8.1,-1100.0,300.0],[9.4,-900.0,250.0]],
+                  "land":[-900.0,250.0],"expire_t":27.4}]}
   ]
 }
 ```
+`side` ∈ {CT,T}; `rtype` ∈ {Pistol,Full,Eco}; all `t` are seconds from freeze_end; coords are game coords.
 
-`/api/results` normalizes heatmap and tile paths by prepending `/output/` if not already present. Frontend does **not** add the prefix.
+`output/analysis_summary.json`:
+```json
+{"map":"de_mirage","max_demos":6,
+ "failed":[{"username":"X","reason":"..."}],
+ "results":[{"username":"...","domain":"...","player_json":"/output/player_xxx.json",
+             "combat_stats":{"kd":1.23,"awp_rate":45.0},"demos_found":6,"round_count":47}]}
+```
 
-### Frontend (index.html)
+### Frontend (templates/index.html + static/app.js + static/replay.js)
 
-- **Layout**: sticky 50px header + two-column body (220px left sidebar + 1fr right panel). Body height = `100vh - 50px`, no page scroll.
-- **Left panel**: 5 username inputs, demo depth slider, Execute Scan button, status box, data coverage (adequacy bars), failed targets section.
-- **Failed section**: lives at the **bottom of the left panel** (not in main content area), shown in red when any player scan fails.
-- **Right panel**: player tabs + card per player. Card = card-header + two-column card-body (heatmap grid left, stats+zones right).
-- **Heatmap grid**: 2×2 tile grid, `height: calc(100vh - 210px)` so all 4 tiles are visible without scrolling. Left-click a tile to expand it (fills full 2×2 area with `tileExpand` CSS animation, `cubic-bezier` easing). Right-click to collapse.
-- **Combat stats**: K/D (global) and AWP率 in a 2-column stat-grid.
-- **Zone stats**: per round-type (Full Buy / Force Buy / Eco / Pistol) zone distribution bars.
-- **Page load**: checks `/api/status` first → resumes polling if `running`, renders state if `done`, falls back to `/api/results` if `idle`/`error`.
-- **Adequacy bar**: per-player color-coded coverage % tags.
-- **List input**: `[name1, name2, name3]` format in any box is parsed as a comma-separated list.
+- Sticky 50px header + left sidebar (map `<select>`, 5 username inputs, depth, key, scan button,
+  status, failed list) + right panel of player cards.
+- `app.js`: `loadMaps()` fills the dropdown; `run()` POSTs `/api/analyze`; `poll()` hits `/api/status`
+  every 2s and adds a card per result via `/api/player/<domain>`.
+- Each card: K/D, AWP%, round count; CT/T tabs; 3 canvases (Pistol/Full/Eco). Switching tab calls
+  `setFilter(side, rtype)` on each `ReplayPlayer`.
+- `replay.js` `ReplayPlayer(canvas, {radar, transform, rounds, side, rtype})`:
+  overlays all matching rounds on a `PLAYBACK_S=9`s loop (45s game time, 5× speed). **No fading trails.**
+  Draws grenade in-flight arcs, landing dots, and range circles (smoke/molotov) during `[land_t, expire_t]`.
+  Methods: `setFilter`, `toggleRound`, `start`, `stop`. `static/replay_test.html` is a standalone fixture.
 
 ### Known Data Limitations
 
-- Players with no Mirage ranked games: `get_mirage_demos_by_domain` returns empty → reported as failed.
-- `match_type=9` is ranked mode and always includes `demo_url`. No-params / other match_types often return matches with empty `demo_url` — so `match_type=9` must be tried first.
-- `get_steamid_for_player` matches by username string — fails if username changed since the match.
-- K/D is global (both sides). CT-only K/D not implemented (CT-side kill detection from events is fragile).
+- Players with no ranked games on the chosen map → `get_demos_by_domain` empty → reported failed.
+- `get_steamid_for_player` matches by username string — fails if the player renamed since the match.
+- K/D is global (both sides); CT-only K/D not implemented.
+- Canvas replay has no headless unit test — verify visually via `replay_test.html` or a live scan.
 
 ### VPS Deployment
 
-Server runs on Ubuntu VPS at `/home/ubuntu/server/`. Start command:
 ```bash
 cd /home/ubuntu/server
 source venv/bin/activate
+pip install flask requests urllib3 pandas numpy demoparser2 awpy
+awpy get maps          # downloads radar assets to ~/.awpy
+python setup_maps.py   # populate data/maps/<map>/{radar.png, meta.json}
 python web_server.py
 ```
+Access at `http://<VPS公网IP>:5000` — ensure port 5000 is open. Install `fonts-noto-cjk` for CJK if needed.
+(`awpy` is only used offline by `setup_maps.py`; the server itself no longer renders images.)
 
-Python deps (install in venv):
+### Tests
+
+`server/tests/` (pytest). Integration tests use a fixture demo at
+`server/../demos_analysis/g161-n-20260123174821830606429_de_mirage.dem` (~100 MB, not in git);
+they `pytest.skip` when absent. On this Windows box, run with
+`--basetemp` pointing outside the access-denied system temp, e.g. a scratchpad dir.
+
 ```bash
-pip install flask numpy pandas matplotlib scipy shapely demoparser2 requests
+cd server && python -m pytest tests/ -v
 ```
-
-Access at `http://<VPS公网IP>:5000` — ensure port 5000 is open in security group.
-
-### Debug / Diagnostic Tools (local)
-
-`D:/CSAI/debug_api_diagnose.py` — checks why players show "无 Mirage demo 可用". Queries all match_types for each username and reports map distribution + demo_url availability. No downloads. Run with proxy active.
 
 ---
 
-## Local Analysis Tools (legacy/offline)
+## Local Analysis Tools (legacy/offline, 1.0)
 
-Located in `tools/` and `D:/CSAI/` root.
-
-### Running Scripts
+Located in `tools/` and `D:/CSAI/` root. These predate the 2.0 rewrite and are **not** used by
+the server path; they still target Mirage + the old zone/heatmap model.
 
 ```bash
-python algo_batch_processor.py   # Text report: CT positioning per player/round-type
 python tool_heatmap.py           # Interactive heatmap viewer (matplotlib UI)
 python tool_visualize_path.py    # Path overlay on radar for a single player/round
-python algo_position_map.py      # Scatter plot of raw position data
 python map_zone_editor.py        # GUI: draw/edit zone polygons on radar image
 python tool_map_calibrator.py    # GUI: calibrate game→pixel coordinate transform
 python zone_priority_manager.py  # GUI: assign zone priority weights
-python batch_downloader.py       # Scrape Mirage demo download links from 5E platform
-python match_crawler.py          # JS-injection crawler for individual match pages
 ```
-
-### Tracked Players & Round Classification
-
-CT_PLAYERS dict (hardcoded in `algo_batch_processor.py` and `tool_heatmap.py`) maps Steam ID → display name.
-
-Round types determined at `round_freeze_end` tick by CT team average `current_equip_value`:
-- **Pistol** — first round of each CT segment
-- **Full Buy** ≥ 3800
-- **Force Buy** ≥ 1500
-- **Eco** < 1500
-
-### Analysis Window
-
-`freeze_end` to `first_kill_in_round + 3s` (sampled every 64 ticks). Captures initial positioning before engagements.
-
-### Coordinate System
-
-`map_config.json` defines the transform (`pos_x: -3230`, `pos_y: 1713`, `scale: 5.0`):
-```python
-pixel_x = (game_x - pos_x) / scale
-pixel_y = (pos_y - game_y) / scale   # Y axis is inverted
-```
-
-### Zone System
-
-`mirage_zones.json` — named polygon zones in **game coordinates** (not pixel).
-`zone_weights.json` — priority weights: `1`=default, `2`=key control, `3`=high-risk aggression.
-Containment check: `shapely.geometry.Point.within(Polygon)` iterates all zones; first match wins.
 
 ### demoparser2 API Pattern
 
@@ -268,29 +222,18 @@ df = parser.parse_ticks(["X", "Y", "steamid", "team_name"], ticks=[tick1, tick2,
 Always cast result to `pd.DataFrame` and cast `steamid` to `str`.
 
 **Known field notes**:
-- `dmg_health` — uncapped raw bullet damage (AWP headshot = 446+). Cap at 100 if computing effective damage.
+- `dmg_health` — uncapped raw bullet damage (AWP headshot = 446+). Cap at 100 for effective damage.
 - `kills_total`, `deaths_total` — scoreboard running totals, available as tick fields. Reliable for end-of-match K/D.
 - `weapon` in `player_death`/`player_hurt` events — plain name (e.g. `"awp"`, `"ak47"`), not prefixed.
-- `active_weapon_name` — NOT a valid demoparser2 tick field (silently returns nothing). Use event `weapon` field instead.
+- `active_weapon_name` — NOT a valid demoparser2 tick field. Use the event `weapon` field instead.
+- `parse_grenades()` — projectile rows have `grenade_type` like `CSmokeGrenadeProjectile`, `grenade_entity_id`, `x`/`y`/`tick`. Bare-inventory rows have NaN x/y.
 
 ## Config & Data Files
 
 | File | Purpose |
 |------|---------|
-| `server/config.py` | VPS config: HOST, PORT, SECRET_KEY, paths |
-| `server/data/map_config.json` | Coordinate transform parameters |
-| `server/data/mirage_zones.json` | Zone polygon definitions (game coords) |
-| `server/data/zone_weights.json` | Tactical priority per zone |
-| `server/data/de_mirage_radar.png` | Radar image used as visualization background |
+| `server/config.py` | `HOST/PORT/SECRET_KEY`, paths, `MAPS_DIR`, `TICK_RATE=64`, `WINDOW_S=45`, `SAMPLE_EVERY=8`, `EQ_FULL_BUY=3800` |
+| `server/data/maps/<map>/radar.png` | Radar background (generated by setup_maps.py) |
+| `server/data/maps/<map>/meta.json` | Coordinate transform `{pos_x,pos_y,scale}` |
 | `server/demos_opponents/` | Downloaded .dem files + `.demo_index.json` |
-| `server/output/` | Generated heatmaps (tile + combined) + analysis_summary.json |
-
-## Debug & Inspection Tools
-
-```bash
-python debug_round_inspector.py   # Inspect round structure and events
-python debug_event_list.py        # List all event types in a demo
-python debug_zone_verifier.py     # Validate zones against real trajectories
-python demo_inspector.py          # General demo structure diagnostics
-python tool_check_players.py      # Verify player Steam IDs in a demo
-```
+| `server/output/` | `player_{domain}.json` + `analysis_summary.json` |
