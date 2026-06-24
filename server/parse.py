@@ -89,3 +89,48 @@ def parse_positions(parser, classified, target_steamid):
         out.append({"official_num": int(num), "side": m["side"],
                     "rtype": m["rtype"], "path": path})
     return out
+
+
+_PROJ_TYPE = {
+    "CSmokeGrenadeProjectile": "smoke",
+    "CFlashbangProjectile": "flash",
+    "CHEGrenadeProjectile": "he",
+    "CMolotovProjectile": "molotov",
+    "CDecoyProjectile": "decoy",
+}
+_DUR = {"smoke": 18.0, "molotov": 7.0, "flash": 0.5, "he": 0.3, "decoy": 15.0}
+
+def parse_grenades_for_rounds(parser, classified, target_steamid):
+    sid = str(target_steamid)
+    active = [r for r in classified if r["side"]]
+    if not active:
+        return {}
+    g = parser.parse_grenades()
+    if not isinstance(g, pd.DataFrame) or g.empty:
+        return {}
+    g = g.copy()
+    g["steamid"] = g["steamid"].astype(str)
+    g = g[(g["steamid"] == sid) & g["grenade_type"].isin(_PROJ_TYPE.keys())
+          & g["x"].notna() & g["y"].notna()]
+    if g.empty:
+        return {}
+    span = config.WINDOW_S * config.TICK_RATE
+    out = {r["official_num"]: [] for r in active}
+    # assign each projectile-tick row to a round window, then group per entity
+    for r in active:
+        lo, hi = r["fe_tick"], r["fe_tick"] + span
+        win = g[(g["tick"] >= lo) & (g["tick"] < hi)]
+        if win.empty:
+            continue
+        for eid, grp in win.groupby("grenade_entity_id"):
+            grp = grp.sort_values("tick")
+            gtype = _PROJ_TYPE[grp["grenade_type"].iloc[0]]
+            arc = [[round((int(t) - lo) / config.TICK_RATE, 3), float(x), float(y)]
+                   for t, x, y in zip(grp["tick"], grp["x"], grp["y"])]
+            throw_t, land_t = arc[0][0], arc[-1][0]
+            land = [arc[-1][1], arc[-1][2]]
+            expire_t = round(land_t + _DUR[gtype], 3)
+            out[r["official_num"]].append(
+                {"type": gtype, "throw_t": throw_t, "land_t": land_t,
+                 "arc": arc, "land": land, "expire_t": expire_t})
+    return out
