@@ -13,6 +13,28 @@ let curSide = "CT";
 const sideTargets = [];   // [{rp, rtype}] — each canvas keeps its own fixed rtype
 function applySide(){ for(const {rp,rtype} of sideTargets) rp.setFilter(curSide, rtype); }
 
+// ── View switcher: one big canvas at a time, picked via top buttons ──────────
+// views[i] = {id, btn, panel}. id = "pistol" or a player domain.
+const views = [];
+let activeView = null;
+function selectView(id){
+  activeView = id;
+  for(const v of views){
+    const on = v.id === id;
+    v.panel.classList.toggle("active", on);
+    v.btn.classList.toggle("active", on);
+  }
+}
+function addView(id, label, panel){
+  const btn = document.createElement("button");
+  btn.textContent = label;
+  btn.onclick = () => selectView(id);
+  $("#viewtabs").appendChild(btn);
+  $("#stage").appendChild(panel);
+  views.push({id, btn, panel});
+  if(activeView === null) selectView(id);   // first view becomes active
+}
+
 // Merged pistol overlay: one canvas, all scanned players' pistol rounds, each
 // round pre-tagged with its player color. We grow this shared array as players
 // load; the ReplayPlayer reads it live every frame.
@@ -65,10 +87,10 @@ async function run(){
   const j = await r.json();
   if(j.error){ $("#status").textContent = "错误："+j.error; return; }
   // reset all view state for a fresh scan
-  $("#cards").innerHTML=""; players={}; allPlayers.length=0; sideTargets.length=0;
-  pistolRounds.length=0; pistolPlayer=null; curSide="CT";
+  $("#viewtabs").innerHTML=""; $("#stage").innerHTML="";
+  players={}; allPlayers.length=0; sideTargets.length=0; views.length=0;
+  pistolRounds.length=0; pistolPlayer=null; activeView=null; curSide="CT";
   $("#sideCT").classList.add("active"); $("#sideT").classList.remove("active");
-  $("#pistol").style.display="none"; $("#pistolLegend").innerHTML="";
   poll();
 }
 
@@ -76,48 +98,49 @@ async function poll(){
   const r = await fetch("/api/status"); const s = await r.json();
   $("#status").textContent = s.message || s.status;
   $("#failed").innerHTML = (s.failed||[]).map(f=>`✗ ${f.username}: ${f.reason}`).join("<br>");
-  for(const res of (s.results||[])) if(!players[res.domain]) await addCard(res);
+  for(const res of (s.results||[])) if(!players[res.domain]) await addPlayer(res);
   if(s.status === "running") setTimeout(poll, 2000);
 }
 
-// Lazily build the merged pistol overlay once the first player's map is known.
-function ensurePistolOverlay(data){
+// Lazily build the merged pistol view once the first player's map is known.
+function ensurePistolView(data){
   if(pistolPlayer) return;
-  const cv = $("#pistolCanvas");
+  const panel = document.createElement("div"); panel.className="view";
+  panel.innerHTML = `<div class="viewhead">手枪局 · 全队合并
+    <span class="legend" id="pistolLegend"></span></div><canvas></canvas>`;
+  const cv = panel.querySelector("canvas");
   pistolPlayer = new ReplayPlayer(cv, {radar:data.radar, transform:data.transform,
     rounds:pistolRounds, side:curSide, rtype:"Pistol"});
   allPlayers.push(pistolPlayer);
   sideTargets.push({rp:pistolPlayer, rtype:"Pistol"});
-  $("#pistol").style.display="block";
+  addView("pistol", "手枪局", panel);
 }
 
-async function addCard(res){
+async function addPlayer(res){
   const r = await fetch("/api/player/"+res.domain); const data = await r.json();
   const idx = Object.keys(players).length;
   const color = PLAYER_COLORS[idx % PLAYER_COLORS.length];
 
-  ensurePistolOverlay(data);
+  ensurePistolView(data);
   // merge this player's pistol rounds (tagged with their color) into the overlay
   for(const rd of data.rounds) if(rd.rtype==="Pistol") pistolRounds.push({...rd, color});
   $("#pistolLegend").insertAdjacentHTML("beforeend",
     `<span><i style="background:${color}"></i>${data.username}</span>`);
 
-  // per-player card: stats + a single Buy-round canvas
-  const card = document.createElement("div"); card.className="card";
+  // per-player view: stats header + one big Buy-round canvas
   const cs = data.combat_stats||{};
-  card.innerHTML = `<div><b style="color:${color}">${data.username}</b>
+  const panel = document.createElement("div"); panel.className="view";
+  panel.innerHTML = `<div class="viewhead"><b style="color:${color}">${data.username}</b>
     <span class="stat">K/D ${cs.kd??"-"}</span>
     <span class="stat">持狙 ${cs.awp_rate??"-"}%</span>
-    <span class="stat" style="color:#789">${data.round_count} 回合</span></div>
-    <div class="grid"><div class="cell"><h4>买局</h4>
-      <canvas data-rt="Buy"></canvas></div></div>`;
-  $("#cards").appendChild(card);
-
-  const cv = card.querySelector('canvas[data-rt="Buy"]');
+    <span class="stat" style="color:#789">${data.round_count} 回合 · 买局</span></div>
+    <canvas></canvas>`;
+  const cv = panel.querySelector("canvas");
   const buyPlayer = new ReplayPlayer(cv,{radar:data.radar,transform:data.transform,
     rounds:data.rounds, side:curSide, rtype:"Buy"});
   allPlayers.push(buyPlayer);
   sideTargets.push({rp:buyPlayer, rtype:"Buy"});
+  addView(res.domain, data.username, panel);
   players[res.domain] = {data, buyPlayer};
 }
 
