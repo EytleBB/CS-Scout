@@ -3,5 +3,5 @@ requests
 urllib3
 pandas
 numpy
-demoparser2
+demoparser2>=0.41.3
 awpy
