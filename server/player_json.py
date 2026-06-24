@@ -8,6 +8,7 @@ def build(username, domain, steamid, map_name, rounds, combat):
         out_rounds.append({
             "side": r["side"], "rtype": r["rtype"], "round_id": r["official_num"],
             "path": r["path"], "grenades": r["grenades"],
+            "death_t": r.get("death_t"),
         })
     return {
         "username": username, "domain": domain, "steamid": str(steamid),

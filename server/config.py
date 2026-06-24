@@ -14,7 +14,7 @@ MAPS_DIR = os.path.join(DATA_DIR, "maps")
 
 # Analysis parameters
 TICK_RATE = 64
-WINDOW_S = 45          # per-round capture window (seconds from freeze_end)
+WINDOW_S = 20          # per-round capture window (seconds from freeze_end)
 SAMPLE_EVERY = 8       # downsample stride in ticks (~8Hz)
 EQ_FULL_BUY = 3800     # team-avg equip value threshold for Full vs Eco
 

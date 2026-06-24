@@ -140,6 +140,30 @@ def parse_grenades_for_rounds(parser, classified, target_steamid):
                  "arc": arc, "land": land, "expire_t": expire_t})
     return out
 
+def parse_deaths_for_rounds(evts, classified, target_steamid):
+    """Per-round death time of the target (seconds from freeze_end), in-window
+    only. Dead players keep reporting a frozen position to the window end, so
+    death must come from player_death events. Returns {official_num: death_t}."""
+    sid = str(target_steamid)
+    active = [r for r in classified if r["side"]]
+    out = {}
+    dd = evts.get("player_death")
+    if dd is None:
+        return out
+    if not isinstance(dd, pd.DataFrame):
+        dd = pd.DataFrame(dd)
+    if dd.empty or "user_steamid" not in dd.columns:
+        return out
+    dd = dd.copy()
+    dd["user_steamid"] = dd["user_steamid"].astype(str)
+    span = config.WINDOW_S * config.TICK_RATE
+    for r in active:
+        lo = r["fe_tick"]
+        d = dd[(dd["user_steamid"] == sid) & (dd["tick"] >= lo) & (dd["tick"] < lo + span)]
+        if not d.empty:
+            out[r["official_num"]] = round((int(d["tick"].min()) - lo) / config.TICK_RATE, 3)
+    return out
+
 def _landing_index(arc):
     """Index of the projectile's resting point — the last sample where it still
     moved. Projectile entities linger stationary after landing; everything past
@@ -169,9 +193,11 @@ def parse_demo(path, target_steamid):
     classified = classify_rounds(p, rounds, {str(target_steamid)})
     positions = parse_positions(p, classified, target_steamid)
     nades = parse_grenades_for_rounds(p, classified, target_steamid)
+    deaths = parse_deaths_for_rounds(evts, classified, target_steamid)
     out = []
     for r in positions:
         out.append({"side": r["side"], "rtype": r["rtype"],
                     "official_num": r["official_num"], "path": r["path"],
-                    "grenades": nades.get(r["official_num"], [])})
+                    "grenades": nades.get(r["official_num"], []),
+                    "death_t": deaths.get(r["official_num"])})
     return out

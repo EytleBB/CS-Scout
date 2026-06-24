@@ -1,6 +1,7 @@
 // CS-Scout 2.0 canvas replay engine. Overlays all rounds of one (side,rtype)
 // on a 9s loop (45s game time accelerated 5x). No fading trails.
-const PLAYBACK_S = 9, WINDOW_S = 45;
+const PLAYBACK_S = 10, WINDOW_S = 20;
+const DOT_R = 10;   // player dot radius (px)
 const SIDE_COLOR = { CT: "#4aa3ff", T: "#ffc23b" };
 const NADE_COLOR = { smoke:"#dddddd", flash:"#fff27a", he:"#ff6b6b",
                      molotov:"#ff8c42", decoy:"#9b8cff" };
@@ -62,20 +63,20 @@ class ReplayPlayer {
           ctx.stroke();
         }
       }
-      // player dot (no trail); when the path ends before the window does, the
-      // player died — mark the death spot with an X instead of vanishing.
-      const p=this._interp(r.path, gt);
-      if(p){ const [px,py]=this.g2p(p[0],p[1]);
-        ctx.beginPath(); ctx.arc(px,py,5,0,2*Math.PI);
-        ctx.fillStyle=col; ctx.globalAlpha=0.85; ctx.fill(); ctx.globalAlpha=1; }
-      else if(r.path.length){
-        const last=r.path[r.path.length-1];
-        if(gt>=last[0] && last[0] < WINDOW_S-2) this._drawX(this.g2p(last[1],last[2]), col);
+      // player dot (no trail). After death_t, mark the death spot with an X.
+      if(r.death_t != null && gt >= r.death_t){
+        const dp=this._interp(r.path, r.death_t);
+        if(dp) this._drawX(this.g2p(dp[0],dp[1]), col);
+      } else {
+        const p=this._interp(r.path, gt);
+        if(p){ const [px,py]=this.g2p(p[0],p[1]);
+          ctx.beginPath(); ctx.arc(px,py,DOT_R,0,2*Math.PI);
+          ctx.fillStyle=col; ctx.globalAlpha=0.85; ctx.fill(); ctx.globalAlpha=1; }
       }
     }
   }
   _drawX(pt, col){
-    const [x,y]=pt, s=5, ctx=this.ctx;
+    const [x,y]=pt, s=DOT_R*0.85, ctx=this.ctx;
     ctx.strokeStyle=col; ctx.lineWidth=2; ctx.globalAlpha=0.9; ctx.beginPath();
     ctx.moveTo(x-s,y-s); ctx.lineTo(x+s,y+s);
     ctx.moveTo(x+s,y-s); ctx.lineTo(x-s,y+s);
