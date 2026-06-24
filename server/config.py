@@ -16,7 +16,8 @@ MAPS_DIR = os.path.join(DATA_DIR, "maps")
 TICK_RATE = 64
 WINDOW_S = 20          # per-round capture window (seconds from freeze_end)
 SAMPLE_EVERY = 8       # downsample stride in ticks (~8Hz)
-EQ_FULL_BUY = 3800     # team-avg equip value threshold for Full vs Eco
+EQ_FULL_BUY = 3800     # (legacy) team-avg threshold; no longer used by classify_rounds
+EQ_BUY_MIN = 2000      # per-player equip value floor: below this a non-pistol round is dropped
 
 # Server
 HOST = "0.0.0.0"

@@ -4,11 +4,11 @@ import combat
 
 def test_aggregate_math():
     out = combat.aggregate_combat_stats([
-        {"kd": 1.0, "ct_kills": 10, "awp_kills": 5},
-        {"kd": 2.0, "ct_kills": 10, "awp_kills": 0},
+        {"kd": 1.0, "awp_rounds": 5, "total_rounds": 10},
+        {"kd": 2.0, "awp_rounds": 0, "total_rounds": 10},
     ])
     assert out["kd"] == 1.5
-    assert out["awp_rate"] == 25.0    # 5/20
+    assert out["awp_rate"] == 25.0    # 5/20 rounds held an AWP
 
 def test_aggregate_empty():
     assert combat.aggregate_combat_stats([None, None]) is None
@@ -28,4 +28,4 @@ def test_parse_combat_real():
     s = combat.parse_combat_stats(FIXTURE, sid)
     assert s is not None
     assert isinstance(s["kd"], float) and s["kd"] >= 0
-    assert s["ct_kills"] >= 0 and 0 <= s["awp_kills"] <= s["ct_kills"]
+    assert s["total_rounds"] >= 0 and 0 <= s["awp_rounds"] <= s["total_rounds"]

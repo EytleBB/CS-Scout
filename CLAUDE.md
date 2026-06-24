@@ -30,7 +30,7 @@ web_server.py  (Flask, port 5000)
     ▼
 output/player_{domain}.json  +  output/analysis_summary.json
     ▼
-Browser fetches /api/player/<domain> → ReplayPlayer canvas (9s loop, CT/T × Pistol/Full/Eco)
+Browser fetches /api/player/<domain> → ReplayPlayer canvas (looping, unified CT/T; merged-pistol + per-player Buy)
 ```
 
 ### Module Map (`server/`)
@@ -40,7 +40,7 @@ Browser fetches /api/player/<domain> → ReplayPlayer canvas (9s loop, CT/T × P
 | `maps.py` | Runtime map loader: `load_map(name)`, `game_to_pixel(transform,gx,gy)`, `available_maps()` |
 | `setup_maps.py` | One-time: pull radar.png + transform from awpy into `data/maps/<map>/` |
 | `parse.py` | `get_round_table`, `classify_rounds` (3-type CT/T), `parse_positions`, `parse_grenades_for_rounds`, `parse_demo` (merger) |
-| `combat.py` | `parse_combat_stats` (K/D + CT AWP), `aggregate_combat_stats` |
+| `combat.py` | `parse_combat_stats` (K/D + AWP-hold rate), `aggregate_combat_stats` |
 | `player_json.py` | `build(...)` — assembles per-player JSON from rounds + combat |
 | `pipeline.py` | `run(usernames, map_name, ...)`, demo dedup index, `cleanup_demos`, `download_and_extract`, `assemble_round_offset` |
 | `api_client.py` | 5E scraping: `search_player`, `get_demos_by_domain(domain, map_name, count)`, `get_steamid_for_player`, `download_demo` |
@@ -87,12 +87,18 @@ if total `.dem` size > 30 GB, deletes oldest files until ≤ 10 GB.
 - `game_to_pixel(transform, gx, gy)` = `((gx-pos_x)/scale, (pos_y-gy)/scale)` — Y axis inverted.
 - `available_maps()` lists dirs under `MAPS_DIR` that contain `meta.json`.
 
-### Round Classification (parse.classify_rounds) — 3 types, CT and T
+### Round Classification (parse.classify_rounds) — 2 kept types, CT and T
 
-At each `round_freeze_end`, for the target steamid: `side` ∈ {CT, T}. Economy:
-- **Pistol** — first round of each half-segment (side flips into a new half).
-- **Full** — team-avg `current_equip_value` ≥ `EQ_FULL_BUY` (3800).
-- **Eco** — otherwise. (No Force Buy in 2.0.)
+At each `round_freeze_end`, for the target steamid: `side` ∈ {CT, T}. Economy is judged on
+the target's **own** `current_equip_value` (not team average):
+- **Pistol** — first round of each half-segment (side flips into a new half). Always kept,
+  regardless of equip.
+- **Buy** — non-pistol with personal equip ≥ `EQ_BUY_MIN` (2000).
+- Non-pistol with personal equip < 2000 → **dropped**: `rtype=None`, excluded from JSON.
+  The round still carries its real `side` so half-segment (pistol) tracking isn't broken.
+
+Downstream `parse_positions`/`parse_grenades_for_rounds`/`parse_deaths_for_rounds` filter on
+`r["side"] and r["rtype"]`, so dropped rounds produce no path/grenades/death.
 
 ### Position Sampling (parse.parse_positions)
 
@@ -108,9 +114,11 @@ Types: smoke/flash/he/molotov/decoy. Durations: smoke 18s, molotov 7s, decoy 15s
 ### Combat Stats (combat.py)
 
 - **K/D** — global scoreboard: `kills_total`/`deaths_total` at last `round_end` tick; averaged across demos.
-- **AWP rate** — CT-side AWP kills / CT-side total kills. CT rounds via `classify_rounds` `fe_tick`/`end_tick`.
-  `SNIPER_EVENT_NAMES = {"awp","ssg08","g3sg1","scar20"}` (plain event `weapon` names).
-  Aggregated as `sum(awp_kills)/sum(ct_kills)`.
+- **AWP rate** — **AWP-hold rate**: rounds where the player ever held an AWP / total rounds played
+  (both sides, any economy). "Held" = the `inventory` tick field (weapon display names) contains
+  `"AWP"` at any sample tick across the round window. Per demo returns `{awp_rounds, total_rounds}`;
+  aggregated as `sum(awp_rounds)/sum(total_rounds)`. (Replaces the old CT-side AWP-kill ratio, which
+  was too sparse and read ~0% for most players.)
 
 ### Endpoints (web_server.py)
 
@@ -143,7 +151,7 @@ Types: smoke/flash/he/molotov/decoy. Durations: smoke 18s, molotov 7s, decoy 15s
   ]
 }
 ```
-`side` ∈ {CT,T}; `rtype` ∈ {Pistol,Full,Eco}; all `t` are seconds from freeze_end; coords are game coords.
+`side` ∈ {CT,T}; `rtype` ∈ {Pistol,Buy}; all `t` are seconds from freeze_end; coords are game coords.
 
 `output/analysis_summary.json`:
 ```json
@@ -155,16 +163,21 @@ Types: smoke/flash/he/molotov/decoy. Durations: smoke 18s, molotov 7s, decoy 15s
 
 ### Frontend (templates/index.html + static/app.js + static/replay.js)
 
-- Sticky 50px header + left sidebar (map `<select>`, 5 username inputs, depth, key, scan button,
-  status, failed list) + right panel of player cards.
+- Sticky 50px header (with a **unified CT/T toggle** + global play/pause + scrubber) + left sidebar
+  (map `<select>`, 5 username inputs, depth, key, scan button, status, failed list) + main panel.
+- Main panel = a **merged pistol overlay** on top (`#pistol`: one canvas overlaying *all* scanned
+  players' Pistol rounds, each player a distinct color + legend) followed by per-player cards.
+- The header CT/T toggle drives `side` on **every** canvas at once (merged pistol + each card's buy
+  canvas); one side is shown at a time. There are no per-card tabs.
 - `app.js`: `loadMaps()` fills the dropdown; `run()` POSTs `/api/analyze`; `poll()` hits `/api/status`
-  every 2s and adds a card per result via `/api/player/<domain>`.
-- Each card: K/D, AWP%, round count; CT/T tabs; 3 canvases (Pistol/Full/Eco). Switching tab calls
-  `setFilter(side, rtype)` on each `ReplayPlayer`.
+  every 2s and adds a card per result via `/api/player/<domain>`. Each card: K/D, AWP-hold %, round
+  count, and a single **Buy** canvas. The merged overlay grows a shared `pistolRounds` array as
+  players load; the toggle calls `setFilter(side, fixedRtype)` on each registered `ReplayPlayer`.
 - `replay.js` `ReplayPlayer(canvas, {radar, transform, rounds, side, rtype})`:
-  overlays all matching rounds on a `PLAYBACK_S=9`s loop (45s game time, 5× speed). **No fading trails.**
-  Draws grenade in-flight arcs, landing dots, and range circles (smoke/molotov) during `[land_t, expire_t]`.
-  Methods: `setFilter`, `toggleRound`, `start`, `stop`. `static/replay_test.html` is a standalone fixture.
+  overlays all matching rounds on a `PLAYBACK_S` loop (`WINDOW_S` game time accelerated). **No fading
+  trails.** Per-round `color` overrides the side color (used by the merged pistol overlay). Draws
+  grenade in-flight arcs, landing dots, and range circles (smoke/molotov) during `[land_t, expire_t]`.
+  Methods: `setFilter`, `toggleRound`, `drawAt`. `static/replay_test.html` is a standalone fixture.
 
 ### Known Data Limitations
 
@@ -232,7 +245,7 @@ Always cast result to `pd.DataFrame` and cast `steamid` to `str`.
 
 | File | Purpose |
 |------|---------|
-| `server/config.py` | `HOST/PORT/SECRET_KEY`, paths, `MAPS_DIR`, `TICK_RATE=64`, `WINDOW_S=45`, `SAMPLE_EVERY=8`, `EQ_FULL_BUY=3800` |
+| `server/config.py` | `HOST/PORT/SECRET_KEY`, paths, `MAPS_DIR`, `TICK_RATE=64`, `WINDOW_S=20`, `SAMPLE_EVERY=8`, `EQ_BUY_MIN=2000` (per-player buy floor; `EQ_FULL_BUY` legacy/unused) |
 | `server/data/maps/<map>/radar.png` | Radar background (generated by setup_maps.py) |
 | `server/data/maps/<map>/meta.json` | Coordinate transform `{pos_x,pos_y,scale}` |
 | `server/demos_opponents/` | Downloaded .dem files + `.demo_index.json` |

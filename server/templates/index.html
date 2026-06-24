@@ -26,9 +26,21 @@
  .ctrls button{width:34px;padding:4px 0;margin:0;background:#26264a;font-size:14px}
  .ctrls input[type=range]{width:260px;margin:0}
  .ctrls #timelbl{color:#9ad;font-family:monospace;min-width:96px;text-align:right}
+ .sidetoggle button{width:46px;background:#26264a}
+ .sidetoggle button.active{background:#3a6df0}
+ .section-title{margin:4px 0 8px;font-size:14px;color:#9ad;font-weight:600}
+ #pistol{background:#16162a;border:1px solid #2a2a44;border-radius:8px;padding:12px;margin-bottom:16px}
+ #pistol canvas{max-width:520px}
+ .legend{display:flex;flex-wrap:wrap;gap:14px;margin-top:8px;font-size:13px}
+ .legend span{display:inline-flex;align-items:center;gap:6px}
+ .legend i{width:12px;height:12px;border-radius:3px;display:inline-block}
+ .card .grid canvas{max-width:520px}
 </style></head><body>
 <header>CS-Scout 2.0 — 对手回放分析
  <span class="ctrls">
+  <span class="sidetoggle" title="统一切换 CT / T">
+   <button id="sideCT" data-s="CT" class="active">CT</button><button id="sideT" data-s="T">T</button>
+  </span>
   <button id="playpause" title="播放/暂停">⏸</button>
   <input id="scrub" type="range" min="0" max="1000" value="0" title="进度（可拖动跳转）">
   <span id="timelbl">0.0 / 20.0s</span>
@@ -48,7 +60,14 @@
   <div id="status"></div>
   <div id="failed"></div>
  </div>
- <div class="main"><div id="cards"></div></div>
+ <div class="main">
+  <div id="pistol" style="display:none">
+   <div class="section-title">手枪局 · 全队合并</div>
+   <canvas id="pistolCanvas"></canvas>
+   <div class="legend" id="pistolLegend"></div>
+  </div>
+  <div id="cards"></div>
+ </div>
 </div>
 <script src="/static/replay.js"></script>
 <script src="/static/app.js"></script>

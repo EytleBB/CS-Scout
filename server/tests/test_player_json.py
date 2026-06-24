@@ -7,7 +7,7 @@ def test_build_schema(tmp_path, monkeypatch):
     (d / "radar.png").write_bytes(b"x")
     (d / "meta.json").write_text(json.dumps({"transform":{"pos_x":-3230.0,"pos_y":1713.0,"scale":5.0}}))
     monkeypatch.setattr(config, "MAPS_DIR", str(tmp_path / "maps"))
-    rounds = [{"side":"CT","rtype":"Full","official_num":3,
+    rounds = [{"side":"CT","rtype":"Buy","official_num":3,
                "path":[[0.0,-1.0,2.0]],
                "grenades":[{"type":"smoke","throw_t":1.0,"land_t":2.0,
                             "arc":[[1.0,0.0,0.0]],"land":[0.0,0.0],"expire_t":20.0}]}]
@@ -18,5 +18,5 @@ def test_build_schema(tmp_path, monkeypatch):
     assert out["combat_stats"]["kd"] == 1.2
     assert out["round_count"] == 1
     r0 = out["rounds"][0]
-    assert r0["side"]=="CT" and r0["rtype"]=="Full" and r0["round_id"]==3
+    assert r0["side"]=="CT" and r0["rtype"]=="Buy" and r0["round_id"]==3
     assert r0["grenades"][0]["type"]=="smoke"

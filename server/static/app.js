@@ -1,10 +1,23 @@
 const $ = s => document.querySelector(s);
-const RTYPES = ["Pistol","Full","Eco"];
-let players = {};   // domain -> {data, ps:{rtype:ReplayPlayer}, side}
+let players = {};   // domain -> {data, buyPlayer}
+
+// Per-player colors for the merged pistol overlay + card accents.
+const PLAYER_COLORS = ["#4aa3ff","#ffc23b","#5ad469","#ff6b9d","#b48cff"];
 
 // ── Global playback clock: one loop drives every canvas in lockstep ──────────
 const allPlayers = [];                          // every ReplayPlayer on the page
 const clock = { elapsed: 0, playing: true, last: null };
+
+// ── Unified CT/T state: one toggle drives every canvas's side ────────────────
+let curSide = "CT";
+const sideTargets = [];   // [{rp, rtype}] — each canvas keeps its own fixed rtype
+function applySide(){ for(const {rp,rtype} of sideTargets) rp.setFilter(curSide, rtype); }
+
+// Merged pistol overlay: one canvas, all scanned players' pistol rounds, each
+// round pre-tagged with its player color. We grow this shared array as players
+// load; the ReplayPlayer reads it live every frame.
+let pistolRounds = [];
+let pistolPlayer = null;
 
 function tick(ts){
   if(clock.last === null) clock.last = ts;
@@ -22,12 +35,20 @@ requestAnimationFrame(tick);
 
 function wireControls(){
   const btn = $("#playpause"), scrub = $("#scrub");
-  if(!btn || !scrub) return;   // tolerate a stale/mismatched template
-  btn.onclick = () => { clock.playing = !clock.playing; clock.last = null; };
-  scrub.addEventListener("input", e => {
-    clock.playing = false;
-    clock.elapsed = (+e.target.value / 1000) * PLAYBACK_S;
-  });
+  if(btn && scrub){
+    btn.onclick = () => { clock.playing = !clock.playing; clock.last = null; };
+    scrub.addEventListener("input", e => {
+      clock.playing = false;
+      clock.elapsed = (+e.target.value / 1000) * PLAYBACK_S;
+    });
+  }
+  const ct = $("#sideCT"), t = $("#sideT");
+  if(ct && t){
+    const set = (side, on, off) => { curSide = side; on.classList.add("active");
+      off.classList.remove("active"); applySide(); };
+    ct.onclick = () => set("CT", ct, t);
+    t.onclick  = () => set("T",  t, ct);
+  }
 }
 
 async function loadMaps(){
@@ -43,7 +64,12 @@ async function run(){
     headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
   const j = await r.json();
   if(j.error){ $("#status").textContent = "错误："+j.error; return; }
-  $("#cards").innerHTML=""; players={}; allPlayers.length=0; poll();
+  // reset all view state for a fresh scan
+  $("#cards").innerHTML=""; players={}; allPlayers.length=0; sideTargets.length=0;
+  pistolRounds.length=0; pistolPlayer=null; curSide="CT";
+  $("#sideCT").classList.add("active"); $("#sideT").classList.remove("active");
+  $("#pistol").style.display="none"; $("#pistolLegend").innerHTML="";
+  poll();
 }
 
 async function poll(){
@@ -54,32 +80,45 @@ async function poll(){
   if(s.status === "running") setTimeout(poll, 2000);
 }
 
+// Lazily build the merged pistol overlay once the first player's map is known.
+function ensurePistolOverlay(data){
+  if(pistolPlayer) return;
+  const cv = $("#pistolCanvas");
+  pistolPlayer = new ReplayPlayer(cv, {radar:data.radar, transform:data.transform,
+    rounds:pistolRounds, side:curSide, rtype:"Pistol"});
+  allPlayers.push(pistolPlayer);
+  sideTargets.push({rp:pistolPlayer, rtype:"Pistol"});
+  $("#pistol").style.display="block";
+}
+
 async function addCard(res){
   const r = await fetch("/api/player/"+res.domain); const data = await r.json();
+  const idx = Object.keys(players).length;
+  const color = PLAYER_COLORS[idx % PLAYER_COLORS.length];
+
+  ensurePistolOverlay(data);
+  // merge this player's pistol rounds (tagged with their color) into the overlay
+  for(const rd of data.rounds) if(rd.rtype==="Pistol") pistolRounds.push({...rd, color});
+  $("#pistolLegend").insertAdjacentHTML("beforeend",
+    `<span><i style="background:${color}"></i>${data.username}</span>`);
+
+  // per-player card: stats + a single Buy-round canvas
   const card = document.createElement("div"); card.className="card";
   const cs = data.combat_stats||{};
-  card.innerHTML = `<div><b>${data.username}</b>
+  card.innerHTML = `<div><b style="color:${color}">${data.username}</b>
     <span class="stat">K/D ${cs.kd??"-"}</span>
-    <span class="stat">AWP ${cs.awp_rate??"-"}%</span>
+    <span class="stat">持狙 ${cs.awp_rate??"-"}%</span>
     <span class="stat" style="color:#789">${data.round_count} 回合</span></div>
-    <div class="tabs"><button data-s="CT" class="active">CT</button>
-    <button data-s="T">T</button></div>
-    <div class="grid">${RTYPES.map(rt=>`<div class="cell"><h4>${rt}</h4>
-      <canvas data-rt="${rt}"></canvas></div>`).join("")}</div>`;
+    <div class="grid"><div class="cell"><h4>买局</h4>
+      <canvas data-rt="Buy"></canvas></div></div>`;
   $("#cards").appendChild(card);
-  const ps = {}; players[res.domain] = {data, ps, side:"CT"};
-  for(const rt of RTYPES){
-    const cv = card.querySelector(`canvas[data-rt="${rt}"]`);
-    const p = new ReplayPlayer(cv,{radar:data.radar,transform:data.transform,
-      rounds:data.rounds,side:"CT",rtype:rt});
-    allPlayers.push(p); ps[rt]=p;
-  }
-  card.querySelectorAll(".tabs button").forEach(b=>b.onclick=()=>{
-    card.querySelectorAll(".tabs button").forEach(x=>x.classList.remove("active"));
-    b.classList.add("active");
-    const side=b.dataset.s; players[res.domain].side=side;
-    for(const rt of RTYPES) ps[rt].setFilter(side, rt);
-  });
+
+  const cv = card.querySelector('canvas[data-rt="Buy"]');
+  const buyPlayer = new ReplayPlayer(cv,{radar:data.radar,transform:data.transform,
+    rounds:data.rounds, side:curSide, rtype:"Buy"});
+  allPlayers.push(buyPlayer);
+  sideTargets.push({rp:buyPlayer, rtype:"Buy"});
+  players[res.domain] = {data, buyPlayer};
 }
 
 $("#run").onclick = run;

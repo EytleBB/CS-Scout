@@ -46,8 +46,8 @@ class ReplayPlayer {
     ctx.clearRect(0,0,this.cv.width,this.cv.height);
     if(this.imgReady) ctx.drawImage(this.img,0,0); else { ctx.fillStyle="#1a1a2e";
       ctx.fillRect(0,0,this.cv.width,this.cv.height); }
-    const col=SIDE_COLOR[this.side];
     for(const r of this._rounds()){
+      const col = r.color || SIDE_COLOR[this.side];   // merged views color per player
       // grenades: range circles, landing, in-flight arc
       for(const n of (r.grenades||[])){
         if(gt>=n.land_t && gt<n.expire_t){
