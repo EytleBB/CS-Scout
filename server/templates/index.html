@@ -22,8 +22,18 @@
  canvas{width:100%;background:#1a1a2e;border-radius:4px}
  .stat{display:inline-block;margin-right:16px;font-size:14px}
  #failed{color:#ff6b6b;font-size:13px;margin-top:12px}
+ .ctrls{margin-left:auto;display:flex;align-items:center;gap:10px;font-weight:400;font-size:13px}
+ .ctrls button{width:34px;padding:4px 0;margin:0;background:#26264a;font-size:14px}
+ .ctrls input[type=range]{width:260px;margin:0}
+ .ctrls #timelbl{color:#9ad;font-family:monospace;min-width:96px;text-align:right}
 </style></head><body>
-<header>CS-Scout 2.0 — 对手回放分析</header>
+<header>CS-Scout 2.0 — 对手回放分析
+ <span class="ctrls">
+  <button id="playpause" title="播放/暂停">⏸</button>
+  <input id="scrub" type="range" min="0" max="1000" value="0" title="进度（可拖动跳转）">
+  <span id="timelbl">0.0 / 20.0s</span>
+ </span>
+</header>
 <div class="wrap">
  <div class="side">
   <select id="map"></select>

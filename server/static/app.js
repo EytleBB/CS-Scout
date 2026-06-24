@@ -2,6 +2,32 @@ const $ = s => document.querySelector(s);
 const RTYPES = ["Pistol","Full","Eco"];
 let players = {};   // domain -> {data, ps:{rtype:ReplayPlayer}, side}
 
+// ── Global playback clock: one loop drives every canvas in lockstep ──────────
+const allPlayers = [];                          // every ReplayPlayer on the page
+const clock = { elapsed: 0, playing: true, last: null };
+
+function tick(ts){
+  if(clock.last === null) clock.last = ts;
+  const dt = (ts - clock.last) / 1000; clock.last = ts;
+  if(clock.playing) clock.elapsed = (clock.elapsed + dt) % PLAYBACK_S;
+  const gt = clock.elapsed / PLAYBACK_S * WINDOW_S;
+  for(const p of allPlayers) p.drawAt(gt);
+  const scrub = $("#scrub"), lbl = $("#timelbl"), btn = $("#playpause");
+  if(scrub && document.activeElement !== scrub) scrub.value = (clock.elapsed/PLAYBACK_S*1000)|0;
+  if(lbl) lbl.textContent = gt.toFixed(1) + " / " + WINDOW_S.toFixed(1) + "s";
+  if(btn) btn.textContent = clock.playing ? "⏸" : "▶";
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+function wireControls(){
+  $("#playpause").onclick = () => { clock.playing = !clock.playing; clock.last = null; };
+  $("#scrub").addEventListener("input", e => {
+    clock.playing = false;
+    clock.elapsed = (+e.target.value / 1000) * PLAYBACK_S;
+  });
+}
+
 async function loadMaps(){
   const r = await fetch("/api/maps"); const {maps} = await r.json();
   $("#map").innerHTML = maps.map(m=>`<option>${m}</option>`).join("");
@@ -15,7 +41,7 @@ async function run(){
     headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
   const j = await r.json();
   if(j.error){ $("#status").textContent = "错误："+j.error; return; }
-  $("#cards").innerHTML=""; players={}; poll();
+  $("#cards").innerHTML=""; players={}; allPlayers.length=0; poll();
 }
 
 async function poll(){
@@ -44,7 +70,7 @@ async function addCard(res){
     const cv = card.querySelector(`canvas[data-rt="${rt}"]`);
     const p = new ReplayPlayer(cv,{radar:data.radar,transform:data.transform,
       rounds:data.rounds,side:"CT",rtype:rt});
-    p.start(); ps[rt]=p;
+    allPlayers.push(p); ps[rt]=p;
   }
   card.querySelectorAll(".tabs button").forEach(b=>b.onclick=()=>{
     card.querySelectorAll(".tabs button").forEach(x=>x.classList.remove("active"));
@@ -55,5 +81,6 @@ async function addCard(res){
 }
 
 $("#run").onclick = run;
+wireControls();
 loadMaps();
 poll();   // resume if a run is already in progress

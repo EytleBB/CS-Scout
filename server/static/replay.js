@@ -18,7 +18,6 @@ class ReplayPlayer {
     this.img.onload = () => { this.imgReady = true;
       this.cv.width = this.img.width; this.cv.height = this.img.height; };
     this.img.src = opts.radar;
-    this._raf = null; this._t0 = null;
   }
   g2p(x, y) { const t=this.transform;
     return [(x - t.pos_x)/t.scale, (t.pos_y - y)/t.scale]; }
@@ -35,7 +34,12 @@ class ReplayPlayer {
       return [x0+(x1-x0)*f, y0+(y1-y0)*f]; } }
     return null;
   }
-  _drawFrame(gt){ // gt = game seconds in [0,WINDOW_S]
+  _velAt(path, gt){ // movement direction (game-coord delta) of the segment at gt
+    for(let i=1;i<path.length;i++){ if(gt <= path[i][0]){
+      return [path[i][1]-path[i-1][1], path[i][2]-path[i-1][2]]; } }
+    return null;
+  }
+  drawAt(gt){ // gt = game seconds in [0,WINDOW_S]
     const ctx=this.ctx;
     // Clear first: the radar PNG has transparent regions, so drawImage alone
     // composites over the previous frame and leaves trails outside the map.
@@ -70,10 +74,21 @@ class ReplayPlayer {
       } else {
         const p=this._interp(r.path, gt);
         if(p){ const [px,py]=this.g2p(p[0],p[1]);
+          // movement-direction arrow (skip when essentially stationary)
+          const v=this._velAt(r.path, gt);
+          if(v){ const vx=v[0]/this.transform.scale, vy=-v[1]/this.transform.scale;
+            if(Math.hypot(vx,vy) > 0.5) this._drawArrow(px,py,Math.atan2(vy,vx),col); }
           ctx.beginPath(); ctx.arc(px,py,DOT_R,0,2*Math.PI);
           ctx.fillStyle=col; ctx.globalAlpha=0.85; ctx.fill(); ctx.globalAlpha=1; }
       }
     }
+  }
+  _drawArrow(px, py, a, col){
+    const ctx=this.ctx, r=DOT_R+8, w=6;
+    ctx.save(); ctx.translate(px,py); ctx.rotate(a);
+    ctx.beginPath(); ctx.moveTo(r,0); ctx.lineTo(r-9,-w); ctx.lineTo(r-9,w); ctx.closePath();
+    ctx.fillStyle=col; ctx.globalAlpha=0.95; ctx.fill(); ctx.globalAlpha=1;
+    ctx.restore();
   }
   _drawX(pt, col){
     const [x,y]=pt, s=DOT_R*0.85, ctx=this.ctx;
@@ -82,12 +97,5 @@ class ReplayPlayer {
     ctx.moveTo(x+s,y-s); ctx.lineTo(x-s,y+s);
     ctx.stroke(); ctx.globalAlpha=1;
   }
-  start(){ if(this._raf) return;
-    const loop=(ts)=>{ if(this._t0===null) this._t0=ts;
-      const elapsed=((ts-this._t0)/1000)%PLAYBACK_S;
-      this._drawFrame(elapsed/PLAYBACK_S*WINDOW_S);
-      this._raf=requestAnimationFrame(loop); };
-    this._raf=requestAnimationFrame(loop); }
-  stop(){ if(this._raf) cancelAnimationFrame(this._raf); this._raf=null; this._t0=null; }
 }
 if (typeof module !== "undefined") module.exports = { ReplayPlayer };
