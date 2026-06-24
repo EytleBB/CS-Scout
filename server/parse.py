@@ -134,3 +134,27 @@ def parse_grenades_for_rounds(parser, classified, target_steamid):
                 {"type": gtype, "throw_t": throw_t, "land_t": land_t,
                  "arc": arc, "land": land, "expire_t": expire_t})
     return out
+
+def parse_demo(path, target_steamid):
+    """Full single-demo parse: returns merged per-round dicts with path+grenades."""
+    from demoparser2 import DemoParser
+    try:
+        p = DemoParser(path)
+        evts = dict(p.parse_events(
+            ["round_freeze_end","round_announce_match_start","round_end","player_death"],
+            other=["tick"]))
+    except Exception as e:
+        log.warning(f"parse_demo failed {path}: {e}")
+        return []
+    rounds = get_round_table(evts)
+    if not rounds:
+        return []
+    classified = classify_rounds(p, rounds, {str(target_steamid)})
+    positions = parse_positions(p, classified, target_steamid)
+    nades = parse_grenades_for_rounds(p, classified, target_steamid)
+    out = []
+    for r in positions:
+        out.append({"side": r["side"], "rtype": r["rtype"],
+                    "official_num": r["official_num"], "path": r["path"],
+                    "grenades": nades.get(r["official_num"], [])})
+    return out
