@@ -21,8 +21,10 @@ function tick(ts){
 requestAnimationFrame(tick);
 
 function wireControls(){
-  $("#playpause").onclick = () => { clock.playing = !clock.playing; clock.last = null; };
-  $("#scrub").addEventListener("input", e => {
+  const btn = $("#playpause"), scrub = $("#scrub");
+  if(!btn || !scrub) return;   // tolerate a stale/mismatched template
+  btn.onclick = () => { clock.playing = !clock.playing; clock.last = null; };
+  scrub.addEventListener("input", e => {
     clock.playing = false;
     clock.elapsed = (+e.target.value / 1000) * PLAYBACK_S;
   });
@@ -81,6 +83,6 @@ async function addCard(res){
 }
 
 $("#run").onclick = run;
+loadMaps();           // core first — must not be blocked by optional control wiring
+poll();               // resume if a run is already in progress
 wireControls();
-loadMaps();
-poll();   // resume if a run is already in progress
