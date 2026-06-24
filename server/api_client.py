@@ -67,8 +67,9 @@ def search_player(username):
         return None, None
 
 
-def get_mirage_demos_by_domain(domain, count=10):
-    """Paginate through a player's match history and collect up to `count` Mirage demos.
+def get_demos_by_domain(domain, map_name, count=10):
+    """Paginate through a player's match history and collect up to `count` demos
+    on the given map.
 
     Tries match_type=9 (ranked, always has demo_url) first, then falls through to
     other match_types if still short of `count`.
@@ -102,7 +103,7 @@ def get_mirage_demos_by_domain(domain, count=10):
                         continue
                     seen_codes.add(mc)
                     new_on_page = True
-                    if m.get("map") == "de_mirage" and m.get("demo_url"):
+                    if m.get("map") == map_name and m.get("demo_url"):
                         results.append({"match_code": mc, "demo_url": m["demo_url"]})
                         if len(results) >= count:
                             break
@@ -111,11 +112,11 @@ def get_mirage_demos_by_domain(domain, count=10):
                     break
 
             except Exception as e:
-                log.warning(f"get_mirage_demos {candidate} page {page} failed: {e}")
+                log.warning(f"get_demos {candidate} page {page} failed: {e}")
                 break
 
     if not results:
-        log.warning(f"get_mirage_demos: no Mirage demos found for domain {domain}")
+        log.warning(f"get_demos: no {map_name} demos found for domain {domain}")
     return results
 
 

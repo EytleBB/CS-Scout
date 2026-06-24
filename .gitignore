@@ -18,8 +18,11 @@ demos_analysis/
 # Output images & summaries (generated)
 server/output/
 
+# Generated map data (run setup_maps.py to regenerate)
+server/data/maps/
+
 # Secrets / local config
-server/config.py
+# server/config.py  — committed in 2.0 (no real secrets)
 
 # IDE
 .idea/

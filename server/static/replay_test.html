@@ -1,0 +1,18 @@
+<!doctype html><meta charset="utf-8"><body style="background:#111">
+<canvas id="cv"></canvas>
+<script src="replay.js"></script>
+<script>
+const rounds=[
+ {side:"CT",rtype:"Full",round_id:1,
+  path:[[0,-1500,400],[2,-1000,400],[4,-500,300],[6,-200,200]],
+  grenades:[{type:"smoke",throw_t:1,land_t:3,arc:[[1,-1400,400],[3,-600,300]],
+             land:[-600,300],expire_t:21}]},
+ {side:"CT",rtype:"Full",round_id:2,
+  path:[[0,-1500,400],[2,-1200,600],[5,-900,700]],grenades:[]}
+];
+const p=new ReplayPlayer(document.getElementById("cv"),
+ {radar:"/maps/de_mirage/radar.png",
+  transform:{pos_x:-3230,pos_y:1713,scale:5.0},
+  rounds, side:"CT", rtype:"Full"});
+p.start();
+</script></body>
