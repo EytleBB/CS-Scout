@@ -53,3 +53,39 @@ def classify_rounds(parser, rounds, target_sids):
         prev_side = side
         result.append({**r, "side": side, "rtype": rtype})
     return result
+
+
+def parse_positions(parser, classified, target_steamid):
+    """Sample target's X/Y every SAMPLE_EVERY ticks across [fe, fe+WINDOW_S]
+    for each classified round (side != None). Returns per-round path lists."""
+    sid = str(target_steamid)
+    active = [r for r in classified if r["side"]]
+    if not active:
+        return []
+    span = config.WINDOW_S * config.TICK_RATE
+    sample_ticks, tick_round = [], {}
+    for r in active:
+        for t in range(r["fe_tick"], min(r["fe_tick"] + span, r["end_tick"]), config.SAMPLE_EVERY):
+            sample_ticks.append(t); tick_round[t] = r["official_num"]
+    if not sample_ticks:
+        return []
+    df = parser.parse_ticks(["X", "Y", "steamid"], ticks=sample_ticks)
+    if not isinstance(df, pd.DataFrame):
+        df = pd.DataFrame(df)
+    df["steamid"] = df["steamid"].astype(str)
+    df = df[df["steamid"] == sid].copy()
+    if df.empty:
+        return []
+    df["official_num"] = df["tick"].map(tick_round)
+    fe_by_num = {r["official_num"]: r["fe_tick"] for r in active}
+    meta_by_num = {r["official_num"]: r for r in active}
+    out = []
+    for num, grp in df.groupby("official_num"):
+        grp = grp.sort_values("tick")
+        fe = fe_by_num[num]
+        path = [[round((int(t) - fe) / config.TICK_RATE, 3), float(x), float(y)]
+                for t, x, y in zip(grp["tick"], grp["X"], grp["Y"])]
+        m = meta_by_num[num]
+        out.append({"official_num": int(num), "side": m["side"],
+                    "rtype": m["rtype"], "path": path})
+    return out
