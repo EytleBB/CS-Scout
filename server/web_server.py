@@ -1,11 +1,14 @@
 """
-CSAI Web Server — runs on VPS
+CSAI 2.0 Web Server — runs on VPS
 
 Endpoints:
-  POST /api/analyze_by_names — start analysis by 5E usernames
+  POST /api/analyze          — start analysis: {usernames[], map, max_demos, key}
   GET  /api/status           — poll progress
-  GET  /api/results          — get saved results
-  GET  /output/<file>        — serve heatmap images
+  GET  /api/maps             — available maps
+  GET  /api/player/<domain>  — per-player replay JSON
+  GET  /api/results          — saved summary
+  GET  /output/<file>        — serve output JSON
+  GET  /maps/<path>          — serve radar images
   GET  /                     — web UI
 """
 
@@ -18,6 +21,7 @@ from flask import Flask, render_template, request, jsonify, send_from_directory
 
 import pipeline
 import config
+import maps
 
 app = Flask(__name__, template_folder=os.path.join(config.BASE_DIR, "templates"))
 
@@ -33,6 +37,7 @@ state = {
     "failed": [],
     "total_players": 0,
     "max_demos": 10,
+    "map": "",
 }
 state_lock = threading.Lock()
 
@@ -44,39 +49,43 @@ def index():
     return render_template("index.html")
 
 
-@app.route("/api/analyze_by_names", methods=["POST"])
-def api_analyze_by_names():
+@app.route("/api/analyze", methods=["POST"])
+def api_analyze():
     data = request.get_json()
     usernames = data.get("usernames", [])
+    map_name = data.get("map", "")
     max_demos = max(1, min(10, int(data.get("max_demos", 10))))
-    key = data.get("key", "")
-
-    if key != config.SECRET_KEY:
+    if data.get("key", "") != config.SECRET_KEY:
         return jsonify({"error": "Invalid key"}), 403
     if not usernames:
         return jsonify({"error": "No usernames provided"}), 400
     if len(usernames) > 5:
         return jsonify({"error": "Maximum 5 players"}), 400
-
+    if not map_name:
+        return jsonify({"error": "No map selected"}), 400
     with state_lock:
         if state["status"] == "running":
             return jsonify({"error": "Analysis already running"}), 409
-        state.update({
-            "status": "running",
-            "message": "开始分析...",
-            "progress": [],
-            "results": [],
-            "failed": [],
-            "total_players": len(usernames),
-            "max_demos": max_demos,
-        })
+        state.update({"status":"running","message":"开始分析...","progress":[],
+                      "results":[],"failed":[],"total_players":len(usernames),
+                      "max_demos":max_demos,"map":map_name})
+    threading.Thread(target=_run_analysis, args=(usernames, map_name, max_demos),
+                     daemon=True).start()
+    return jsonify({"status":"started","count":len(usernames)})
 
-    thread = threading.Thread(
-        target=_run_analysis, args=(usernames, max_demos), daemon=True
-    )
-    thread.start()
 
-    return jsonify({"status": "started", "count": len(usernames)})
+@app.route("/api/maps")
+def api_maps():
+    return jsonify({"maps": maps.available_maps()})
+
+
+@app.route("/api/player/<domain>")
+def api_player(domain):
+    path = os.path.join(config.OUTPUT_DIR, f"player_{domain}.json")
+    if not os.path.exists(path):
+        return jsonify({"error": "not found"}), 404
+    with open(path, encoding="utf-8") as f:
+        return jsonify(json.load(f))
 
 
 @app.route("/api/status")
@@ -89,29 +98,9 @@ def api_status():
 def api_results():
     summary_path = os.path.join(config.OUTPUT_DIR, "analysis_summary.json")
     if not os.path.exists(summary_path):
-        return jsonify({"results": [], "failed": [], "max_demos": 10})
-
+        return jsonify({"results": [], "failed": [], "max_demos": 10, "map": ""})
     with open(summary_path, encoding="utf-8") as f:
-        data = json.load(f)
-
-    # Support both new dict format and old list format
-    if isinstance(data, dict):
-        result_list = data.get("results", [])
-        failed_list = data.get("failed", [])
-        max_demos = data.get("max_demos", 10)
-    else:
-        result_list, failed_list, max_demos = data, [], 10
-
-    for r in result_list:
-        if "demos_found" not in r:
-            r["demos_found"] = r.get("demo_count", 0)
-        if "heatmap" in r and not r["heatmap"].startswith("/output/"):
-            r["heatmap"] = "/output/" + r["heatmap"]
-        if "tiles" in r and isinstance(r["tiles"], dict):
-            r["tiles"] = {k: ("/output/" + v if not v.startswith("/output/") else v)
-                          for k, v in r["tiles"].items()}
-
-    return jsonify({"results": result_list, "failed": failed_list, "max_demos": max_demos})
+        return jsonify(json.load(f))
 
 
 @app.route("/output/<path:filename>")
@@ -119,9 +108,14 @@ def serve_output(filename):
     return send_from_directory(config.OUTPUT_DIR, filename)
 
 
+@app.route("/maps/<path:filename>")
+def serve_maps(filename):
+    return send_from_directory(config.MAPS_DIR, filename)
+
+
 # ── Background runner ─────────────────────────────────────────────────────────
 
-def _run_analysis(usernames, max_demos=10):
+def _run_analysis(usernames, map_name, max_demos=10):
     def progress_cb(opp_idx, total, username, step, msg):
         with state_lock:
             state["message"] = f"[{opp_idx+1}/{total}] {msg}"
@@ -133,27 +127,12 @@ def _run_analysis(usernames, max_demos=10):
             state["progress"].append({"id": username, "step": step, "msg": msg})
 
     try:
-        results, failed = pipeline.run_by_usernames(usernames, max_demos=max_demos, progress_cb=progress_cb)
-        total_demos = sum(r["demos_found"] for r in results)
-
+        results, failed = pipeline.run(usernames, map_name, max_demos=max_demos,
+                                       progress_cb=progress_cb)
         with state_lock:
             state["status"] = "done"
-            state["message"] = f"分析完成：{len(results)}/{len(usernames)} 位玩家，共 {total_demos} 个 demo"
-            state["results"] = [
-                {
-                    "username":     r["username"],
-                    "domain":       r["domain"],
-                    "heatmap":      f"/output/heatmap_{r['domain']}.png",
-                    "tiles":        {k: f"/output/{v}" for k, v in (r.get("tile_paths") or {}).items()},
-                    "demos_found":  r["demos_found"],
-                    "demo_count":   r["demo_count"],
-                    "record_count": r["record_count"],
-                    "round_count":  r["round_count"],
-                    "zone_stats":   r["zone_stats"],
-                    "combat_stats": r.get("combat_stats"),
-                }
-                for r in results
-            ]
+            state["message"] = f"分析完成：{len(results)}/{len(usernames)} 位玩家"
+            state["results"] = results      # already slim
             state["failed"] = failed
     except Exception as e:
         log.error(f"Analysis failed: {e}")
