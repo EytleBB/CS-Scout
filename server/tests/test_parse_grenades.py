@@ -40,3 +40,13 @@ def test_smoke_persists(ctx):
     smokes = [n for lst in gr.values() for n in lst if n["type"] == "smoke"]
     if smokes:  # demo may or may not have target smokes in-window
         assert all(s["expire_t"] - s["land_t"] > 10 for s in smokes)
+
+def test_landing_tail_trimmed(ctx):
+    # Projectile entities linger at rest after landing; flight time (land_t -
+    # throw_t) must reflect the real arc, not the entity's full lifetime.
+    p, classified, sid = ctx
+    gr = parse.parse_grenades_for_rounds(p, classified, sid)
+    all_nades = [n for lst in gr.values() for n in lst]
+    for n in all_nades:
+        assert n["land_t"] - n["throw_t"] < 10.0, (
+            f"{n['type']} flight {n['land_t']-n['throw_t']:.1f}s — stationary tail not trimmed")

@@ -36,6 +36,9 @@ class ReplayPlayer {
   }
   _drawFrame(gt){ // gt = game seconds in [0,WINDOW_S]
     const ctx=this.ctx;
+    // Clear first: the radar PNG has transparent regions, so drawImage alone
+    // composites over the previous frame and leaves trails outside the map.
+    ctx.clearRect(0,0,this.cv.width,this.cv.height);
     if(this.imgReady) ctx.drawImage(this.img,0,0); else { ctx.fillStyle="#1a1a2e";
       ctx.fillRect(0,0,this.cv.width,this.cv.height); }
     const col=SIDE_COLOR[this.side];
@@ -59,12 +62,24 @@ class ReplayPlayer {
           ctx.stroke();
         }
       }
-      // player dot (no trail)
+      // player dot (no trail); when the path ends before the window does, the
+      // player died — mark the death spot with an X instead of vanishing.
       const p=this._interp(r.path, gt);
       if(p){ const [px,py]=this.g2p(p[0],p[1]);
         ctx.beginPath(); ctx.arc(px,py,5,0,2*Math.PI);
         ctx.fillStyle=col; ctx.globalAlpha=0.85; ctx.fill(); ctx.globalAlpha=1; }
+      else if(r.path.length){
+        const last=r.path[r.path.length-1];
+        if(gt>=last[0] && last[0] < WINDOW_S-2) this._drawX(this.g2p(last[1],last[2]), col);
+      }
     }
+  }
+  _drawX(pt, col){
+    const [x,y]=pt, s=5, ctx=this.ctx;
+    ctx.strokeStyle=col; ctx.lineWidth=2; ctx.globalAlpha=0.9; ctx.beginPath();
+    ctx.moveTo(x-s,y-s); ctx.lineTo(x+s,y+s);
+    ctx.moveTo(x+s,y-s); ctx.lineTo(x-s,y+s);
+    ctx.stroke(); ctx.globalAlpha=1;
   }
   start(){ if(this._raf) return;
     const loop=(ts)=>{ if(this._t0===null) this._t0=ts;

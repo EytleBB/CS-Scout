@@ -127,6 +127,11 @@ def parse_grenades_for_rounds(parser, classified, target_steamid):
             gtype = _PROJ_TYPE[grp["grenade_type"].iloc[0]]
             arc = [[round((int(t) - lo) / config.TICK_RATE, 3), float(x), float(y)]
                    for t, x, y in zip(grp["tick"], grp["x"], grp["y"])]
+            # Projectile entities keep reporting their resting position long after
+            # they land (smoke ~18s, decoy while beeping). Trim that stationary
+            # tail so land_t is the real landing moment, not entity despawn.
+            li = _landing_index(arc)
+            arc = arc[:li + 1]
             throw_t, land_t = arc[0][0], arc[-1][0]
             land = [arc[-1][1], arc[-1][2]]
             expire_t = round(land_t + _DUR[gtype], 3)
@@ -134,6 +139,18 @@ def parse_grenades_for_rounds(parser, classified, target_steamid):
                 {"type": gtype, "throw_t": throw_t, "land_t": land_t,
                  "arc": arc, "land": land, "expire_t": expire_t})
     return out
+
+def _landing_index(arc):
+    """Index of the projectile's resting point — the last sample where it still
+    moved. Projectile entities linger stationary after landing; everything past
+    this index is that stationary tail."""
+    last_moving = 0
+    for i in range(1, len(arc)):
+        dx = arc[i][1] - arc[i - 1][1]
+        dy = arc[i][2] - arc[i - 1][2]
+        if (dx * dx + dy * dy) ** 0.5 > 3.0:
+            last_moving = i
+    return last_moving
 
 def parse_demo(path, target_steamid):
     """Full single-demo parse: returns merged per-round dicts with path+grenades."""
