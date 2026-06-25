@@ -9,6 +9,7 @@ Endpoints:
   GET  /api/results          — saved summary
   GET  /output/<file>        — serve output JSON
   GET  /maps/<path>          — serve radar images
+  GET  /icons/<path>         — serve grenade icon SVGs
   GET  /                     — web UI
 """
 
@@ -111,6 +112,11 @@ def serve_output(filename):
 @app.route("/maps/<path:filename>")
 def serve_maps(filename):
     return send_from_directory(config.MAPS_DIR, filename)
+
+
+@app.route("/icons/<path:filename>")
+def serve_icons(filename):
+    return send_from_directory(config.ICONS_DIR, filename)
 
 
 # ── Background runner ─────────────────────────────────────────────────────────

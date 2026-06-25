@@ -21,8 +21,12 @@ def get_round_table(evts):
 
 def classify_rounds(parser, rounds, target_sids):
     """Classify each round's side (for the target) and economy type.
-    Pistol = first round of each half (each time target's side flips into a new
-    half-start). CT and T both classified. Returns side+rtype per round."""
+    Two kept types, judged on the target's *own* freeze-end equip value:
+      - Pistol = first round of each half-segment (side flips into a new half).
+      - Buy    = non-pistol with personal equip >= EQ_BUY_MIN.
+    Non-pistol rounds with personal equip < EQ_BUY_MIN are dropped: rtype=None
+    (the round still carries its real side so half-segment tracking is unbroken).
+    Returns side+rtype per round."""
     if not rounds:
         return []
     fe_ticks = [r["fe_tick"] for r in rounds]
@@ -45,12 +49,12 @@ def classify_rounds(parser, rounds, target_sids):
         side = "CT" if tgt["team_name"].iloc[0] == "CT" else "T"
         if side != prev_side:                 # entering a new half-segment on this side
             pistol_num[side] = r["official_num"]
-        if r["official_num"] == pistol_num[side]:
-            rtype = "Pistol"
-        else:
-            avg_eq = g[g["team_name"] == tgt["team_name"].iloc[0]]["current_equip_value"].mean()
-            rtype = "Full" if avg_eq >= config.EQ_FULL_BUY else "Eco"
         prev_side = side
+        if r["official_num"] == pistol_num[side]:
+            rtype = "Pistol"                  # always kept, regardless of equip floor
+        else:
+            personal_eq = tgt["current_equip_value"].iloc[0]
+            rtype = "Buy" if personal_eq >= config.EQ_BUY_MIN else None
         result.append({**r, "side": side, "rtype": rtype})
     return result
 
@@ -59,7 +63,7 @@ def parse_positions(parser, classified, target_steamid):
     """Sample target's X/Y every SAMPLE_EVERY ticks across [fe, fe+WINDOW_S]
     for each classified round (side != None). Returns per-round path lists."""
     sid = str(target_steamid)
-    active = [r for r in classified if r["side"]]
+    active = [r for r in classified if r["side"] and r["rtype"]]
     if not active:
         return []
     span = config.WINDOW_S * config.TICK_RATE
@@ -102,7 +106,7 @@ _DUR = {"smoke": 18.0, "molotov": 7.0, "flash": 0.5, "he": 0.3, "decoy": 15.0}
 
 def parse_grenades_for_rounds(parser, classified, target_steamid):
     sid = str(target_steamid)
-    active = [r for r in classified if r["side"]]
+    active = [r for r in classified if r["side"] and r["rtype"]]
     if not active:
         return {}
     g = parser.parse_grenades()
@@ -145,7 +149,7 @@ def parse_deaths_for_rounds(evts, classified, target_steamid):
     only. Dead players keep reporting a frozen position to the window end, so
     death must come from player_death events. Returns {official_num: death_t}."""
     sid = str(target_steamid)
-    active = [r for r in classified if r["side"]]
+    active = [r for r in classified if r["side"] and r["rtype"]]
     out = {}
     dd = evts.get("player_death")
     if dd is None:
