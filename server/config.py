@@ -11,6 +11,8 @@ OUTPUT_DIR = os.path.join(BASE_DIR, "output")
 
 # Map data
 MAPS_DIR = os.path.join(DATA_DIR, "maps")
+# Grenade icon SVGs (repo-root radar/icons, one level above server/)
+ICONS_DIR = os.path.join(BASE_DIR, "..", "radar", "icons")
 
 # Analysis parameters
 TICK_RATE = 64

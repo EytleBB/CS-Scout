@@ -2,11 +2,11 @@ const $ = s => document.querySelector(s);
 let players = {};   // domain -> {data, buyPlayer}
 
 // Per-player colors for the merged pistol overlay + card accents.
-const PLAYER_COLORS = ["#4aa3ff","#ffc23b","#5ad469","#ff6b9d","#b48cff"];
+const PLAYER_COLORS = ["#b24987","#e8da5d","#d88945","#99c6e3","#17897e"];
 
 // ── Global playback clock: one loop drives every canvas in lockstep ──────────
 const allPlayers = [];                          // every ReplayPlayer on the page
-const clock = { elapsed: 0, playing: true, last: null };
+const clock = { elapsed: 0, playing: true, last: null, speed: 1 };
 
 // ── Unified CT/T state: one toggle drives every canvas's side ────────────────
 let curSide = "CT";
@@ -44,7 +44,7 @@ let pistolPlayer = null;
 function tick(ts){
   if(clock.last === null) clock.last = ts;
   const dt = (ts - clock.last) / 1000; clock.last = ts;
-  if(clock.playing) clock.elapsed = (clock.elapsed + dt) % PLAYBACK_S;
+  if(clock.playing) clock.elapsed = (clock.elapsed + dt*clock.speed) % PLAYBACK_S;
   const gt = clock.elapsed / PLAYBACK_S * WINDOW_S;
   for(const p of allPlayers) p.drawAt(gt);
   const scrub = $("#scrub"), lbl = $("#timelbl"), btn = $("#playpause");
@@ -70,6 +70,14 @@ function wireControls(){
       off.classList.remove("active"); applySide(); };
     ct.onclick = () => set("CT", ct, t);
     t.onclick  = () => set("T",  t, ct);
+  }
+  const speed = $("#speed");
+  if(speed){
+    const btns = [...speed.querySelectorAll("button")];
+    for(const b of btns) b.onclick = () => {
+      clock.speed = +b.dataset.x;
+      for(const x of btns) x.classList.toggle("active", x === b);
+    };
   }
 }
 
@@ -106,14 +114,13 @@ async function poll(){
 function ensurePistolView(data){
   if(pistolPlayer) return;
   const panel = document.createElement("div"); panel.className="view";
-  panel.innerHTML = `<div class="viewhead">手枪局 · 全队合并
-    <span class="legend" id="pistolLegend"></span></div><canvas></canvas>`;
+  panel.innerHTML = `<div class="viewhead"><span class="legend" id="pistolLegend"></span></div><canvas></canvas>`;
   const cv = panel.querySelector("canvas");
   pistolPlayer = new ReplayPlayer(cv, {radar:data.radar, transform:data.transform,
     rounds:pistolRounds, side:curSide, rtype:"Pistol"});
   allPlayers.push(pistolPlayer);
   sideTargets.push({rp:pistolPlayer, rtype:"Pistol"});
-  addView("pistol", "手枪局", panel);
+  addView("pistol", "手枪局（全队）", panel);
 }
 
 async function addPlayer(res){
@@ -131,9 +138,9 @@ async function addPlayer(res){
   const cs = data.combat_stats||{};
   const panel = document.createElement("div"); panel.className="view";
   panel.innerHTML = `<div class="viewhead"><b style="color:${color}">${data.username}</b>
-    <span class="stat">K/D ${cs.kd??"-"}</span>
-    <span class="stat">持狙 ${cs.awp_rate??"-"}%</span>
-    <span class="stat" style="color:#789">${data.round_count} 回合 · 买局</span></div>
+    <span class="stat">K/D <b>${cs.kd??"-"}</b></span>
+    <span class="stat">持狙 <b>${cs.awp_rate??"-"}%</b></span>
+    <span class="stat">Buy Round <b>${data.round_count}</b></span></div>
     <canvas></canvas>`;
   const cv = panel.querySelector("canvas");
   const buyPlayer = new ReplayPlayer(cv,{radar:data.radar,transform:data.transform,

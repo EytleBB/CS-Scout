@@ -2,10 +2,25 @@
 // on a 9s loop (45s game time accelerated 5x). No fading trails.
 const PLAYBACK_S = 10, WINDOW_S = 20;
 const DOT_R = 10;   // player dot radius (px)
-const SIDE_COLOR = { CT: "#4aa3ff", T: "#ffc23b" };
+const SIDE_COLOR = { CT: "#99c6e3", T: "#e8da5d" };
 const NADE_COLOR = { smoke:"#dddddd", flash:"#fff27a", he:"#ff6b6b",
                      molotov:"#ff8c42", decoy:"#9b8cff" };
-const NADE_R = { smoke:90, molotov:70 };   // game-units radius for range circles
+const NADE_R = { smoke:171.81, molotov:80.5 };   // game-units coverage radius (molotov 70×1.15; smoke 90×1.15×1.66)
+// Grenade SVG icons served from /icons (lazy-loaded, shared across instances).
+//  - NADE_ICON_SRC: white in-flight glyphs, drawn along the arc while airborne.
+//  - NADE_AREA_SRC: post-detonation area art (smoke cloud / inferno fire), drawn
+//    at the landing spot during [land_t, expire_t], scaled to the coverage diameter.
+const NADE_ICON_SRC = { smoke:"smokegrenade.svg", flash:"flashbang.svg",
+                        he:"hegrenade.svg", molotov:"molotov.svg" };
+const NADE_AREA_SRC = { smoke:"map_smoke.svg", molotov:"inferno.svg" };
+const NADE_ICON_H = 22;   // in-flight icon height (px); width keeps SVG aspect
+const _iconCache = {};    // filename -> HTMLImageElement
+function _icon(file){
+  if(!file) return null;
+  let img = _iconCache[file];
+  if(!img){ img = new Image(); img.src = "/icons/" + file; _iconCache[file] = img; }
+  return img;
+}
 
 class ReplayPlayer {
   constructor(canvas, opts) {
@@ -48,15 +63,18 @@ class ReplayPlayer {
       ctx.fillRect(0,0,this.cv.width,this.cv.height); }
     for(const r of this._rounds()){
       const col = r.color || SIDE_COLOR[this.side];   // merged views color per player
-      // grenades: range circles, landing, in-flight arc
+      // grenades: in-flight arc+glyph, then post-detonation area art / landing marker
       for(const n of (r.grenades||[])){
         if(gt>=n.land_t && gt<n.expire_t){
           const [lx,ly]=this.g2p(n.land[0],n.land[1]);
-          if(NADE_R[n.type]){ const rad=NADE_R[n.type]/this.transform.scale;
-            ctx.beginPath(); ctx.arc(lx,ly,rad,0,2*Math.PI);
-            ctx.fillStyle=NADE_COLOR[n.type]+"55"; ctx.fill(); }
-          ctx.beginPath(); ctx.arc(lx,ly,4,0,2*Math.PI);
-          ctx.fillStyle=NADE_COLOR[n.type]; ctx.fill();
+          if(NADE_AREA_SRC[n.type]){
+            // smoke/molotov: area art scaled to the coverage diameter (2×radius)
+            this._drawNadeArea(n.type, lx, ly);
+          } else {
+            // flash/he/decoy: no coverage area — just a small landing marker
+            ctx.beginPath(); ctx.arc(lx,ly,4,0,2*Math.PI);
+            ctx.fillStyle=NADE_COLOR[n.type]; ctx.fill();
+          }
         } else if(gt>=n.throw_t && gt<n.land_t){
           // in-flight arc up to current gt (no trail persistence beyond gt)
           ctx.strokeStyle=NADE_COLOR[n.type]; ctx.lineWidth=1.5; ctx.beginPath();
@@ -65,6 +83,9 @@ class ReplayPlayer {
             const [px,py]=this.g2p(x,y);
             started ? ctx.lineTo(px,py) : (ctx.moveTo(px,py), started=true); }
           ctx.stroke();
+          // white icon riding the head of the in-flight arc (drop shadow for contrast)
+          const head=this._interp(n.arc, gt);
+          if(head) this._drawNadeIcon(n.type, this.g2p(head[0],head[1]));
         }
       }
       // player dot (no trail). After death_t, mark the death spot with an X.
@@ -82,6 +103,28 @@ class ReplayPlayer {
           ctx.fillStyle=col; ctx.globalAlpha=0.85; ctx.fill(); ctx.globalAlpha=1; }
       }
     }
+  }
+  _drawNadeIcon(type, pt){   // white in-flight glyph at the arc head
+    const img=_icon(NADE_ICON_SRC[type]);
+    if(!img || !img.complete || !img.naturalWidth) return;
+    const [px,py]=pt, h=NADE_ICON_H, w=h*(img.naturalWidth/img.naturalHeight);
+    const ctx=this.ctx;
+    ctx.save();
+    ctx.shadowColor="rgba(0,0,0,0.85)"; ctx.shadowBlur=3;
+    ctx.shadowOffsetX=1; ctx.shadowOffsetY=1;
+    ctx.drawImage(img, px-w/2, py-h/2, w, h);
+    ctx.restore();
+  }
+  _drawNadeArea(type, cx, cy){   // post-detonation area art, fit to coverage diameter
+    const img=_icon(NADE_AREA_SRC[type]);
+    if(!img || !img.complete || !img.naturalWidth) return;
+    const d=2*NADE_R[type]/this.transform.scale;             // target diameter (px)
+    const s=d/Math.max(img.naturalWidth, img.naturalHeight);  // fit longest side
+    const w=img.naturalWidth*s, h=img.naturalHeight*s;
+    const ctx=this.ctx;
+    ctx.save(); ctx.globalAlpha=0.85;
+    ctx.drawImage(img, cx-w/2, cy-h/2, w, h);
+    ctx.restore();
   }
   _drawArrow(px, py, a, col){
     const ctx=this.ctx, r=DOT_R+8, w=6;

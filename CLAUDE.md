@@ -129,6 +129,7 @@ Types: smoke/flash/he/molotov/decoy. Durations: smoke 18s, molotov 7s, decoy 15s
 - `GET /api/player/<domain>` — that player's `player_{domain}.json` (404 if missing).
 - `GET /api/results` — raw `analysis_summary.json` (no path normalization in 2.0).
 - `GET /output/<file>` — serves output JSON. `GET /maps/<path>` — serves radar from `MAPS_DIR`.
+- `GET /icons/<path>` — serves grenade icon SVGs from `ICONS_DIR` (repo-root `radar/icons/`).
 - `GET /` — `index.html`.
 
 ### JSON Contract
@@ -177,7 +178,10 @@ Types: smoke/flash/he/molotov/decoy. Durations: smoke 18s, molotov 7s, decoy 15s
   overlays all matching rounds on a `PLAYBACK_S` loop (`WINDOW_S` game time accelerated). **No fading
   trails.** Per-round `color` overrides the side color (used by the merged pistol overlay). Draws
   grenade in-flight arcs, landing dots, and range circles (smoke/molotov) during `[land_t, expire_t]`.
-  Methods: `setFilter`, `toggleRound`, `drawAt`. `static/replay_test.html` is a standalone fixture.
+  While a nade is airborne (`[throw_t, land_t)`) it also draws a **white SVG icon** at the arc head
+  (smoke/flash/he/molotov, served from `/icons/<file>.svg`, drop-shadow for contrast); the icon
+  disappears on detonation (no decoy icon). Source SVGs live in repo-root `radar/icons/`.
+  Methods: `setFilter`, `toggleRound`, `drawAt`, `_drawNadeIcon`. `static/replay_test.html` is a standalone fixture.
 
 ### Known Data Limitations
 
