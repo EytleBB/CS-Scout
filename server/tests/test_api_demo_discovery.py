@@ -113,3 +113,85 @@ def test_get_demos_raises_when_every_match_list_request_fails(monkeypatch):
 
     with pytest.raises(api_client.DemoLookupError, match="5E unavailable"):
         api_client.get_demos_by_domain("target-domain", "de_mirage", count=2)
+
+
+def test_gate_failure_with_successful_empty_public_fallback_is_not_api_error(
+        monkeypatch):
+    bootstrap_code = "g161-bootstrap"
+
+    def fake_get(url, **kwargs):
+        if "/api/data/player/" in url:
+            return FakeResponse({
+                "match": [{"match_code": bootstrap_code, "map": "de_nuke"}]
+            })
+        if url.endswith(f"/match/{bootstrap_code}"):
+            return FakeResponse({
+                "code": 0,
+                "data": {
+                    "main": {},
+                    "group_1": [{
+                        "user_info": {"user_data": {
+                            "domain": "target-domain",
+                            "uuid": "54617242-59ac-11f0-a93a-0c42a164bc3c",
+                        }}
+                    }],
+                    "group_2": [],
+                },
+            })
+        if "/match/list" in url:
+            raise requests.ConnectionError("Gate unavailable")
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(api_client, "HTTP", SimpleNamespace(get=fake_get))
+
+    assert api_client.get_demos_by_domain(
+        "target-domain", "de_mirage", count=2) == []
+
+
+def test_uuid_bootstrap_tries_non_ranked_public_feeds(monkeypatch):
+    bootstrap_code = "g161-casual-bootstrap"
+    gate_pages = []
+
+    def fake_get(url, **kwargs):
+        if "/api/data/player/" in url:
+            matches = [] if "match_type=9" in url else [
+                {"match_code": bootstrap_code, "map": "de_nuke"}
+            ]
+            return FakeResponse({"match": matches})
+        if url.endswith(f"/match/{bootstrap_code}"):
+            return FakeResponse({
+                "code": 0,
+                "data": {
+                    "main": {},
+                    "group_1": [{
+                        "user_info": {"user_data": {
+                            "domain": "target-domain",
+                            "uuid": "54617242-59ac-11f0-a93a-0c42a164bc3c",
+                        }}
+                    }],
+                    "group_2": [],
+                },
+            })
+        if "/match/list" in url:
+            gate_pages.append(int(parse_qs(urlparse(url).query)["page"][0]))
+            return FakeResponse({
+                "code": 0,
+                "data": [{"match_id": "g161-old-mirage", "map": "de_mirage"}],
+            })
+        if url.endswith("/match/g161-old-mirage"):
+            return FakeResponse({
+                "code": 0,
+                "data": {"main": {"demo_url": "https://demo/old.zip"}},
+            })
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(api_client, "HTTP", SimpleNamespace(get=fake_get))
+
+    demos = api_client.get_demos_by_domain(
+        "target-domain", "de_mirage", count=1)
+
+    assert gate_pages == [1]
+    assert demos == [{
+        "match_code": "g161-old-mirage",
+        "demo_url": "https://demo/old.zip",
+    }]

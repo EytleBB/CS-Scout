@@ -182,18 +182,26 @@ def _get_recent_public_demos(domain, map_name, count):
 def get_demos_by_domain(domain, map_name, count=10):
     """Collect up to ``count`` downloadable demos from real Gate history pages."""
     bootstrap_error = None
-    try:
-        bootstrap_matches = _get_public_matches(domain, 9)
-    except Exception as e:
-        bootstrap_error = e
-        log.warning(f"get_demos bootstrap failed for domain {domain}: {e}")
-        bootstrap_matches = []
+    bootstrap_successful = 0
+    player_uuid = None
+    for match_type in (9, None, 1, 8):
+        try:
+            bootstrap_matches = _get_public_matches(domain, match_type)
+            bootstrap_successful += 1
+        except Exception as e:
+            bootstrap_error = e
+            log.warning(
+                f"get_demos bootstrap match_type={match_type} failed "
+                f"for domain {domain}: {e}")
+            continue
+        player_uuid = _player_uuid_from_matches(domain, bootstrap_matches)
+        if player_uuid:
+            break
 
-    player_uuid = _player_uuid_from_matches(domain, bootstrap_matches)
     if not player_uuid:
         results, successful_requests, fallback_error = _get_recent_public_demos(
             domain, map_name, count)
-        if not successful_requests and bootstrap_error:
+        if not successful_requests and not bootstrap_successful and bootstrap_error:
             raise DemoLookupError(str(fallback_error or bootstrap_error))
         if not results:
             log.warning(f"get_demos: no {map_name} demos found for domain {domain}")
@@ -207,8 +215,9 @@ def get_demos_by_domain(domain, map_name, count=10):
         except Exception as e:
             log.warning(f"get_demos Gate page {page} failed: {e}")
             if not results:
-                fallback, _, _ = _get_recent_public_demos(domain, map_name, count)
-                if fallback:
+                fallback, successful_requests, _ = _get_recent_public_demos(
+                    domain, map_name, count)
+                if fallback or successful_requests:
                     return fallback
                 raise DemoLookupError(str(e))
             break
