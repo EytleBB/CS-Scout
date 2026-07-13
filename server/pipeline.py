@@ -225,7 +225,7 @@ def run(usernames, map_name, max_demos=10, progress_cb=None):
             os.makedirs(config.OUTPUT_DIR, exist_ok=True)
             jpath = os.path.join(config.OUTPUT_DIR, f"player_{item['domain']}.json")
             with open(jpath, "w", encoding="utf-8") as f:
-                json.dump(pj, f, ensure_ascii=False)
+                json.dump(pj, f, ensure_ascii=False, allow_nan=False)
             results.append({"username":name,"domain":item["domain"],
                 "player_json":f"/output/player_{item['domain']}.json",
                 "combat_stats":cstats,"demos_found":item["demos_found"],
@@ -234,6 +234,6 @@ def run(usernames, map_name, max_demos=10, progress_cb=None):
     os.makedirs(config.OUTPUT_DIR, exist_ok=True)
     summary = {"map":map_name,"max_demos":max_demos,"failed":failed,"results":results}
     with open(os.path.join(config.OUTPUT_DIR,"analysis_summary.json"),"w",encoding="utf-8") as f:
-        json.dump(summary, f, ensure_ascii=False, indent=2)
+        json.dump(summary, f, ensure_ascii=False, indent=2, allow_nan=False)
     log.info(f"Pipeline complete: {len(results)}/{total} players")
     return results, failed

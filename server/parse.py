@@ -78,6 +78,9 @@ def parse_positions(parser, classified, target_steamid):
         df = pd.DataFrame(df)
     df["steamid"] = df["steamid"].astype(str)
     df = df[df["steamid"] == sid].copy()
+    df["X"] = pd.to_numeric(df["X"], errors="coerce")
+    df["Y"] = pd.to_numeric(df["Y"], errors="coerce")
+    df = df[np.isfinite(df["X"]) & np.isfinite(df["Y"])].copy()
     if df.empty:
         return []
     df["official_num"] = df["tick"].map(tick_round)
