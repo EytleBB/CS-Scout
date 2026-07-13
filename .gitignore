@@ -32,6 +32,7 @@ server/data/maps/
 
 # Internal tooling
 .superpowers/
+.worktrees/
 
 # OS
 .DS_Store
