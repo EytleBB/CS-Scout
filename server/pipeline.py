@@ -6,6 +6,13 @@ import api_client, config, parse, combat, player_json
 log = logging.getLogger("pipeline")
 
 
+def _lookup_demos(domain, map_name, count):
+    try:
+        return api_client.get_demos_by_domain(domain, map_name, count), None
+    except api_client.DemoLookupError as e:
+        return [], f"获取 demo 列表失败：{e}"
+
+
 def assemble_round_offset(records, dem_idx):
     """Offset official_num by dem_idx*1000 so rounds from different demos don't collide."""
     for r in records:
@@ -156,7 +163,10 @@ def run(usernames, map_name, max_demos=10, progress_cb=None):
                               "reason":"5E 上未找到该玩家"}); continue
             name = matched or username
             cb(1, f"获取 {map_name} demo 列表...")
-            demos = api_client.get_demos_by_domain(domain, map_name, count=max_demos)
+            demos, lookup_error = _lookup_demos(domain, map_name, max_demos)
+            if lookup_error:
+                dl_queue.put({"type":"player_failed","i":i,"username":name,
+                              "reason":lookup_error}); continue
             if not demos:
                 dl_queue.put({"type":"player_failed","i":i,"username":name,
                               "reason":f"无 {map_name} demo 可用"}); continue
