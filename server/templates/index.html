@@ -1,37 +1,134 @@
 <!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CS-Scout 2.0</title>
+<title>CS-Scout</title>
 <style>
- body{margin:0;font-family:system-ui;background:#0f0f1a;color:#eee}
- header{height:50px;display:flex;align-items:center;padding:0 16px;
-   background:#16162a;border-bottom:1px solid #2a2a44;font-weight:600}
- .wrap{display:flex;height:calc(100vh - 50px)}
- .side{width:240px;padding:12px;border-right:1px solid #2a2a44;overflow:auto}
- .main{flex:1;padding:12px;overflow:auto}
- input,select{width:100%;margin:4px 0;padding:6px;background:#1e1e36;
-   color:#eee;border:1px solid #333;border-radius:4px;box-sizing:border-box}
- button{width:100%;padding:8px;margin-top:8px;background:#3a6df0;color:#fff;
-   border:0;border-radius:4px;cursor:pointer}
- .card{background:#16162a;border:1px solid #2a2a44;border-radius:8px;
-   padding:12px;margin-bottom:16px}
- .tabs button{width:auto;display:inline-block;margin-right:6px;background:#26264a}
- .tabs button.active{background:#3a6df0}
- .grid{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
- .cell{flex:1;min-width:260px}
- .cell h4{margin:4px 0;font-size:13px;color:#9ad}
- canvas{width:100%;background:#1a1a2e;border-radius:4px}
- .stat{display:inline-block;margin-right:16px;font-size:14px}
- #failed{color:#ff6b6b;font-size:13px;margin-top:12px}
- .ctrls{margin-left:auto;display:flex;align-items:center;gap:10px;font-weight:400;font-size:13px}
- .ctrls button{width:34px;padding:4px 0;margin:0;background:#26264a;font-size:14px}
- .ctrls input[type=range]{width:260px;margin:0}
- .ctrls #timelbl{color:#9ad;font-family:monospace;min-width:96px;text-align:right}
+ :root{
+   --bg:#0a0a0b;
+   --ink:#ededee;          /* primary text */
+   --ink-dim:#8c8c90;      /* secondary text */
+   --ink-mute:#5a5a5e;     /* tertiary / placeholders */
+   --line:rgba(255,255,255,.09);
+   --line-2:rgba(255,255,255,.16);
+   --glass:rgba(22,22,24,.55);
+   --glass-2:rgba(255,255,255,.04);
+   --hover:rgba(255,255,255,.08);
+   --on:#f4f4f5;           /* active / selected fill (white) */
+   --r:3px;                /* small corner radius */
+   --danger:#d98a8a;
+ }
+ *{box-sizing:border-box}
+ body{margin:0;color:var(--ink);background:var(--bg);
+   font-family:"Inter",-apple-system,Segoe UI,system-ui,"Microsoft YaHei",sans-serif;
+   font-size:14px;letter-spacing:.01em;-webkit-font-smoothing:antialiased;
+   /* subtle texture so the frosted-glass blur has something to catch */
+   background-image:radial-gradient(900px 500px at 78% -8%,rgba(255,255,255,.05),transparent 60%),
+                    radial-gradient(700px 500px at 5% 110%,rgba(255,255,255,.035),transparent 55%);
+   background-attachment:fixed}
+
+ header{height:56px;display:flex;align-items:center;gap:14px;padding:0 20px;
+   position:sticky;top:0;z-index:10;
+   background:var(--glass);backdrop-filter:blur(18px) saturate(140%);
+   -webkit-backdrop-filter:blur(18px) saturate(140%);
+   border-bottom:1px solid var(--line)}
+ .brand{font-weight:600;font-size:15px;letter-spacing:.04em}
+ .brand b{color:var(--ink)} .brand span{color:var(--ink-mute);font-weight:400}
+
+ .wrap{display:flex;height:calc(100vh - 56px)}
+ .side{width:248px;flex-shrink:0;padding:18px 16px;overflow:auto;
+   background:var(--glass-2);backdrop-filter:blur(12px);
+   -webkit-backdrop-filter:blur(12px);border-right:1px solid var(--line);
+   display:flex;flex-direction:column;gap:9px}
+ .main{flex:1;min-width:0;padding:20px 24px;overflow:auto;
+   display:flex;flex-direction:column}
+
+ /* ── form controls ── */
+ input,select{width:100%;padding:9px 11px;color:var(--ink);
+   background:var(--glass-2);border:1px solid var(--line);border-radius:var(--r);
+   font:inherit;outline:none;transition:border-color .15s,background .15s}
+ input::placeholder{color:var(--ink-mute)}
+ input:focus,select:focus{border-color:var(--line-2);background:rgba(255,255,255,.06)}
+ select{appearance:none;cursor:pointer;
+   background-image:linear-gradient(45deg,transparent 50%,var(--ink-dim) 50%),
+                    linear-gradient(135deg,var(--ink-dim) 50%,transparent 50%);
+   background-position:calc(100% - 16px) center,calc(100% - 11px) center;
+   background-size:5px 5px,5px 5px;background-repeat:no-repeat}
+ select option{background:#161618;color:var(--ink)}
+
+ /* primary button (扫描) — white, restrained */
+ button{font:inherit;cursor:pointer;border-radius:var(--r);
+   border:1px solid var(--line-2);background:var(--glass-2);color:var(--ink);
+   transition:background .15s,border-color .15s,color .15s}
+ button:hover{background:var(--hover);border-color:var(--line-2)}
+ #run{width:100%;padding:10px;margin-top:6px;font-weight:600;
+   background:var(--on);color:#0a0a0b;border-color:var(--on)}
+ #run:hover{background:#fff}
+
+ #status{font-size:13px;color:var(--ink-dim);margin-top:4px}
+ #failed{color:var(--danger);font-size:12.5px;margin-top:8px;line-height:1.6}
+
+ /* ── header controls ── */
+ .ctrls{margin-left:auto;display:flex;align-items:center;gap:12px;font-size:13px}
+ .ctrls button{padding:5px 0;width:34px;background:transparent;border-color:var(--line)}
+ .sidetoggle{display:inline-flex;border:1px solid var(--line);border-radius:var(--r);
+   overflow:hidden}
+ .sidetoggle button{width:42px;border:0;border-radius:0;background:transparent;
+   color:var(--ink-dim);font-weight:600;letter-spacing:.03em}
+ .sidetoggle button+button{border-left:1px solid var(--line)}
+ .sidetoggle button.active{background:var(--on);color:#0a0a0b}
+ .speedtoggle button{width:34px;font-size:12px}
+ #timelbl{color:var(--ink-dim);font-family:"SF Mono",ui-monospace,monospace;
+   font-size:12px;min-width:92px;text-align:right}
+
+ /* range scrubber */
+ input[type=range]{-webkit-appearance:none;appearance:none;width:240px;height:3px;
+   padding:0;background:var(--line-2);border:0;border-radius:99px;cursor:pointer}
+ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:12px;
+   border-radius:50%;background:var(--on);border:0;
+   box-shadow:0 0 0 3px rgba(0,0,0,.4)}
+ input[type=range]::-moz-range-thumb{width:12px;height:12px;border-radius:50%;
+   background:var(--on);border:0}
+
+ /* ── view switcher tabs ── */
+ #viewtabs{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:14px}
+ #viewtabs button{width:auto;padding:7px 16px;font-size:13px;
+   background:var(--glass-2);border-color:var(--line);color:var(--ink-dim)}
+ #viewtabs button:hover{color:var(--ink);background:var(--hover)}
+ #viewtabs button.active{background:var(--on);color:#0a0a0b;border-color:var(--on)}
+
+ /* ── view body ── */
+ #stage{flex:1;display:flex;flex-direction:column;min-height:0}
+ .view{display:none;flex:1;flex-direction:column;min-height:0}
+ .view.active{display:flex}
+ .viewhead{font-size:13px;color:var(--ink-dim);margin-bottom:12px;min-height:22px;
+   display:flex;align-items:center;flex-wrap:wrap;gap:4px}
+ .viewhead b{font-size:15px;font-weight:600;margin-right:14px}
+ .view canvas{display:block;width:auto;max-width:100%;
+   max-height:calc(100vh - 190px);margin:0 auto;border-radius:var(--r);
+   background:rgba(255,255,255,.02);border:1px solid var(--line)}
+
+ .stat{display:inline-block;margin-right:18px;font-size:13px;color:var(--ink-dim)}
+ .stat b{color:var(--ink);font-weight:600}
+
+ .legend{display:flex;flex-wrap:wrap;gap:16px;font-size:12.5px;color:var(--ink-dim)}
+ .legend span{display:inline-flex;align-items:center;gap:7px}
+ .legend i{width:10px;height:10px;border-radius:2px;display:inline-block}
+
+ ::-webkit-scrollbar{width:9px;height:9px}
+ ::-webkit-scrollbar-thumb{background:var(--line-2);border-radius:99px}
+ ::-webkit-scrollbar-track{background:transparent}
 </style></head><body>
-<header>CS-Scout 2.0 — 对手回放分析
+<header>
+ <span class="brand"><b>CS-Scout</b> <span>2.0</span></span>
  <span class="ctrls">
+  <span class="sidetoggle">
+   <button id="sideCT" data-s="CT" class="active">CT</button><button id="sideT" data-s="T">T</button>
+  </span>
   <button id="playpause" title="播放/暂停">⏸</button>
   <input id="scrub" type="range" min="0" max="1000" value="0" title="进度（可拖动跳转）">
   <span id="timelbl">0.0 / 20.0s</span>
+  <span class="sidetoggle speedtoggle" id="speed" title="播放倍速">
+   <button data-x="1" class="active">1×</button><button data-x="2">2×</button><button data-x="4">4×</button><button data-x="8">8×</button>
+  </span>
  </span>
 </header>
 <div class="wrap">
@@ -48,7 +145,10 @@
   <div id="status"></div>
   <div id="failed"></div>
  </div>
- <div class="main"><div id="cards"></div></div>
+ <div class="main">
+  <div id="viewtabs"></div>
+  <div id="stage"></div>
+ </div>
 </div>
 <script src="/static/replay.js"></script>
 <script src="/static/app.js"></script>
