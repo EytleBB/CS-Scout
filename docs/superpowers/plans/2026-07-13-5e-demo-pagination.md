@@ -26,10 +26,10 @@
 - Consumes: `get_demos_by_domain(domain: str, map_name: str, count: int)`
 - Produces: `_get_player_uuid(domain: str, matches: list)`, `_get_gate_match_page(uuid: str, page: int, limit: int = 30)`
 
-- [ ] **Step 1: Write failing tests** for UUID extraction, distinct Gate pagination, detail-only demo URLs, retry configuration, and public fallback.
-- [ ] **Step 2: Run `python -m pytest tests/test_api_demo_discovery.py -v --basetemp ../.pytest-tmp-demo-discovery`** and confirm failures are caused by missing pagination behavior.
-- [ ] **Step 3: Add the minimal retrying session and Gate pagination implementation in `api_client.py`.**
-- [ ] **Step 4: Re-run the focused test and confirm all cases pass.**
+- [x] **Step 1: Write failing tests** for UUID extraction, distinct Gate pagination, detail-only demo URLs, retry configuration, and public fallback.
+- [x] **Step 2: Run `python -m pytest tests/test_api_demo_discovery.py -v --basetemp ../.pytest-tmp-demo-discovery`** and confirm failures are caused by missing pagination behavior.
+- [x] **Step 3: Add the minimal retrying session and Gate pagination implementation in `api_client.py`.**
+- [x] **Step 4: Re-run the focused test and confirm all cases pass.**
 
 ### Task 2: Pipeline error reporting
 
@@ -41,10 +41,10 @@
 - Consumes: `DemoLookupError` raised only when no valid source response was obtained.
 - Produces: a `player_failed` reason beginning with `获取 demo 列表失败`.
 
-- [ ] **Step 1: Write a failing pipeline test for lookup failure classification.**
-- [ ] **Step 2: Run the focused test and confirm the current generic/background behavior fails it.**
-- [ ] **Step 3: Catch `DemoLookupError` in the download stage and enqueue the explicit reason.**
-- [ ] **Step 4: Re-run the focused test.**
+- [x] **Step 1: Write a failing pipeline test for lookup failure classification.**
+- [x] **Step 2: Run the focused test and confirm the current generic/background behavior fails it.**
+- [x] **Step 3: Catch `DemoLookupError` in the download stage and enqueue the explicit reason.**
+- [x] **Step 4: Re-run the focused test.**
 
 ### Task 3: Verification
 
@@ -57,6 +57,6 @@
 - Consumes: all prior tasks.
 - Produces: verified server behavior.
 
-- [ ] **Step 1: Run the focused demo-discovery tests.**
-- [ ] **Step 2: Run `python -m pytest tests/ -v --basetemp ../.pytest-tmp-full`.**
-- [ ] **Step 3: Inspect `git diff --check` and the final diff for unrelated changes.**
+- [x] **Step 1: Run the focused demo-discovery tests.**
+- [x] **Step 2: Run `python -m pytest tests/ -v --basetemp ../.pytest-tmp-full`.**
+- [x] **Step 3: Inspect `git diff --check` and the final diff for unrelated changes.**

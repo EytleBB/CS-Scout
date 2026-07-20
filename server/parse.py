@@ -7,11 +7,46 @@ import config
 
 log = logging.getLogger("parse")
 
+
+def _event_ticks(evts, event_name):
+    """Return sorted, finite integer ticks for a required event."""
+    if not hasattr(evts, "get"):
+        log.warning("round table events are not a mapping")
+        return None
+    raw = evts.get(event_name)
+    if raw is None:
+        log.warning("round table is missing required event %s", event_name)
+        return None
+    try:
+        df = raw if isinstance(raw, pd.DataFrame) else pd.DataFrame(raw)
+    except (TypeError, ValueError) as exc:
+        log.warning("invalid %s event table: %s", event_name, exc)
+        return None
+    if df.empty or "tick" not in df.columns:
+        log.warning("%s has no usable tick column", event_name)
+        return None
+
+    ticks = pd.to_numeric(df["tick"], errors="coerce")
+    max_tick = np.iinfo(np.int64).max
+    ticks = ticks[np.isfinite(ticks) & (ticks >= 0) & (ticks <= max_tick)]
+    if ticks.empty:
+        log.warning("%s has no finite ticks", event_name)
+        return None
+    return ticks.astype("int64").sort_values().drop_duplicates().reset_index(drop=True)
+
+
 def get_round_table(evts):
-    match_tick = int(evts["round_announce_match_start"]["tick"].iloc[0])
-    fe_all = evts["round_freeze_end"]["tick"].sort_values().reset_index(drop=True)
-    re_all = evts["round_end"]["tick"].sort_values().reset_index(drop=True)
+    match_ticks = _event_ticks(evts, "round_announce_match_start")
+    fe_all = _event_ticks(evts, "round_freeze_end")
+    re_all = _event_ticks(evts, "round_end")
+    if match_ticks is None or fe_all is None or re_all is None:
+        return []
+
+    match_tick = int(match_ticks.iloc[0])
     real_fe = fe_all[fe_all >= match_tick].reset_index(drop=True)
+    if real_fe.empty:
+        log.warning("round table has no freeze-end event after match start")
+        return []
     rounds = []
     for i, fe_tick in enumerate(real_fe):
         later = re_all[re_all > fe_tick]
@@ -21,35 +56,52 @@ def get_round_table(evts):
 
 def classify_rounds(parser, rounds, target_sids):
     """Classify each round's side (for the target) and economy type.
-    Pistol = first round of each half (each time target's side flips into a new
-    half-start). CT and T both classified. Returns side+rtype per round."""
+    Pistol is the first round of each observed half-segment.  Other rounds are
+    kept as Buy only when the target's own freeze-end equipment value reaches
+    EQ_BUY_MIN.  Low-economy rounds retain their side but have rtype=None so
+    they cannot disturb half tracking and downstream parsers can drop them.
+    """
     if not rounds:
         return []
+    target_sids = {str(sid) for sid in target_sids}
     fe_ticks = [r["fe_tick"] for r in rounds]
     df = parser.parse_ticks(["steamid", "team_name", "current_equip_value"], ticks=fe_ticks)
     if not isinstance(df, pd.DataFrame):
         df = pd.DataFrame(df)
+    required = {"tick", "steamid", "team_name", "current_equip_value"}
+    if df.empty or not required.issubset(df.columns):
+        return [{**r, "side": None, "rtype": None} for r in rounds]
     df["steamid"] = df["steamid"].astype(str)
     grouped = {tick: g for tick, g in df.groupby("tick")}
 
     result = []
     prev_side = None
-    pistol_num = {"CT": None, "T": None}
     for r in rounds:
         g = grouped.get(r["fe_tick"])
         if g is None or g.empty:
-            result.append({**r, "side": None, "rtype": None}); prev_side = None; continue
+            result.append({**r, "side": None, "rtype": None})
+            continue
         tgt = g[g["steamid"].isin(target_sids)]
         if tgt.empty:
-            result.append({**r, "side": None, "rtype": None}); prev_side = None; continue
-        side = "CT" if tgt["team_name"].iloc[0] == "CT" else "T"
-        if side != prev_side:                 # entering a new half-segment on this side
-            pistol_num[side] = r["official_num"]
-        if r["official_num"] == pistol_num[side]:
+            result.append({**r, "side": None, "rtype": None})
+            continue
+        team_name = str(tgt["team_name"].iloc[0]).upper()
+        side = {"CT": "CT", "T": "T", "TERRORIST": "T"}.get(team_name)
+        if side is None:
+            result.append({**r, "side": None, "rtype": None})
+            continue
+        if side != prev_side:
+            # The first valid target snapshot, and every later side flip, starts
+            # a half-segment.  Missing snapshots do not invent extra pistols.
             rtype = "Pistol"
         else:
-            avg_eq = g[g["team_name"] == tgt["team_name"].iloc[0]]["current_equip_value"].mean()
-            rtype = "Full" if avg_eq >= config.EQ_FULL_BUY else "Eco"
+            personal_eq = pd.to_numeric(
+                tgt["current_equip_value"].iloc[0], errors="coerce")
+            rtype = (
+                "Buy"
+                if pd.notna(personal_eq) and personal_eq >= config.EQ_BUY_MIN
+                else None
+            )
         prev_side = side
         result.append({**r, "side": side, "rtype": rtype})
     return result
@@ -57,9 +109,9 @@ def classify_rounds(parser, rounds, target_sids):
 
 def parse_positions(parser, classified, target_steamid):
     """Sample target's X/Y every SAMPLE_EVERY ticks across [fe, fe+WINDOW_S]
-    for each classified round (side != None). Returns per-round path lists."""
+    for each kept classified round. Returns per-round path lists."""
     sid = str(target_steamid)
-    active = [r for r in classified if r["side"]]
+    active = [r for r in classified if r.get("side") and r.get("rtype")]
     if not active:
         return []
     span = config.WINDOW_S * config.TICK_RATE
@@ -72,8 +124,14 @@ def parse_positions(parser, classified, target_steamid):
     df = parser.parse_ticks(["X", "Y", "steamid"], ticks=sample_ticks)
     if not isinstance(df, pd.DataFrame):
         df = pd.DataFrame(df)
+    required = {"tick", "steamid", "X", "Y"}
+    if df.empty or not required.issubset(df.columns):
+        return []
     df["steamid"] = df["steamid"].astype(str)
     df = df[df["steamid"] == sid].copy()
+    df["X"] = pd.to_numeric(df["X"], errors="coerce")
+    df["Y"] = pd.to_numeric(df["Y"], errors="coerce")
+    df = df[np.isfinite(df["X"]) & np.isfinite(df["Y"])].copy()
     if df.empty:
         return []
     df["official_num"] = df["tick"].map(tick_round)
@@ -102,23 +160,32 @@ _DUR = {"smoke": 18.0, "molotov": 7.0, "flash": 0.5, "he": 0.3, "decoy": 15.0}
 
 def parse_grenades_for_rounds(parser, classified, target_steamid):
     sid = str(target_steamid)
-    active = [r for r in classified if r["side"]]
+    active = [r for r in classified if r.get("side") and r.get("rtype")]
     if not active:
         return {}
     g = parser.parse_grenades()
-    if not isinstance(g, pd.DataFrame) or g.empty:
+    try:
+        if not isinstance(g, pd.DataFrame):
+            g = pd.DataFrame(g)
+    except (TypeError, ValueError):
+        return {}
+    required = {"tick", "steamid", "grenade_type", "grenade_entity_id", "x", "y"}
+    if g.empty or not required.issubset(g.columns):
         return {}
     g = g.copy()
     g["steamid"] = g["steamid"].astype(str)
+    for column in ("tick", "x", "y"):
+        g[column] = pd.to_numeric(g[column], errors="coerce")
     g = g[(g["steamid"] == sid) & g["grenade_type"].isin(_PROJ_TYPE.keys())
-          & g["x"].notna() & g["y"].notna()]
+          & np.isfinite(g["tick"]) & np.isfinite(g["x"]) & np.isfinite(g["y"])]
     if g.empty:
         return {}
     span = config.WINDOW_S * config.TICK_RATE
     out = {r["official_num"]: [] for r in active}
     # assign each projectile-tick row to a round window, then group per entity
     for r in active:
-        lo, hi = r["fe_tick"], r["fe_tick"] + span
+        lo = r["fe_tick"]
+        hi = min(lo + span, r["end_tick"])
         win = g[(g["tick"] >= lo) & (g["tick"] < hi)]
         if win.empty:
             continue
@@ -145,21 +212,33 @@ def parse_deaths_for_rounds(evts, classified, target_steamid):
     only. Dead players keep reporting a frozen position to the window end, so
     death must come from player_death events. Returns {official_num: death_t}."""
     sid = str(target_steamid)
-    active = [r for r in classified if r["side"]]
+    active = [r for r in classified if r.get("side") and r.get("rtype")]
     out = {}
+    if not active or not hasattr(evts, "get"):
+        return out
     dd = evts.get("player_death")
     if dd is None:
         return out
-    if not isinstance(dd, pd.DataFrame):
-        dd = pd.DataFrame(dd)
-    if dd.empty or "user_steamid" not in dd.columns:
+    try:
+        if not isinstance(dd, pd.DataFrame):
+            dd = pd.DataFrame(dd)
+    except (TypeError, ValueError):
+        return out
+    required = {"tick", "user_steamid"}
+    if dd.empty or not required.issubset(dd.columns):
         return out
     dd = dd.copy()
     dd["user_steamid"] = dd["user_steamid"].astype(str)
+    dd["tick"] = pd.to_numeric(dd["tick"], errors="coerce")
+    dd = dd[np.isfinite(dd["tick"])]
+    if dd.empty:
+        return out
     span = config.WINDOW_S * config.TICK_RATE
     for r in active:
         lo = r["fe_tick"]
-        d = dd[(dd["user_steamid"] == sid) & (dd["tick"] >= lo) & (dd["tick"] < lo + span)]
+        hi = min(lo + span, r["end_tick"])
+        d = dd[(dd["user_steamid"] == sid) &
+               (dd["tick"] >= lo) & (dd["tick"] < hi)]
         if not d.empty:
             out[r["official_num"]] = round((int(d["tick"].min()) - lo) / config.TICK_RATE, 3)
     return out
@@ -178,26 +257,29 @@ def _landing_index(arc):
 
 def parse_demo(path, target_steamid):
     """Full single-demo parse: returns merged per-round dicts with path+grenades."""
-    from demoparser2 import DemoParser
     try:
+        from demoparser2 import DemoParser
+
         p = DemoParser(path)
         evts = dict(p.parse_events(
             ["round_freeze_end","round_announce_match_start","round_end","player_death"],
             other=["tick"]))
-    except Exception as e:
-        log.warning(f"parse_demo failed {path}: {e}")
+        rounds = get_round_table(evts)
+        if not rounds:
+            log.warning("parse_demo failed %s: no valid round table", path)
+            return []
+        classified = classify_rounds(p, rounds, {str(target_steamid)})
+        positions = parse_positions(p, classified, target_steamid)
+        nades = parse_grenades_for_rounds(p, classified, target_steamid)
+        deaths = parse_deaths_for_rounds(evts, classified, target_steamid)
+        out = []
+        for r in positions:
+            out.append({"side": r["side"], "rtype": r["rtype"],
+                        "official_num": r["official_num"], "path": r["path"],
+                        "grenades": nades.get(r["official_num"], []),
+                        "death_t": deaths.get(r["official_num"])})
+        return out
+    except Exception as exc:
+        # A single malformed demo must not abort the pipeline for every player.
+        log.warning("parse_demo failed %s: %s", path, exc)
         return []
-    rounds = get_round_table(evts)
-    if not rounds:
-        return []
-    classified = classify_rounds(p, rounds, {str(target_steamid)})
-    positions = parse_positions(p, classified, target_steamid)
-    nades = parse_grenades_for_rounds(p, classified, target_steamid)
-    deaths = parse_deaths_for_rounds(evts, classified, target_steamid)
-    out = []
-    for r in positions:
-        out.append({"side": r["side"], "rtype": r["rtype"],
-                    "official_num": r["official_num"], "path": r["path"],
-                    "grenades": nades.get(r["official_num"], []),
-                    "death_t": deaths.get(r["official_num"])})
-    return out

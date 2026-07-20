@@ -1,0 +1,13 @@
+# Versions validated by the CS-Scout test environment.
+Flask==3.1.3
+requests==2.34.2
+urllib3==2.7.0
+pandas==3.0.3
+# NumPy 2.5 dropped Python 3.11 wheels; 2.4.6 is the newest line shared by
+# the supported Python 3.11/3.12 runtimes.
+numpy==2.4.6
+demoparser2==0.41.4
+
+# Linux production WSGI server. Local Windows development continues to use
+# server/web_server.py and therefore skips this platform-specific dependency.
+gunicorn==23.0.0; platform_system != "Windows"

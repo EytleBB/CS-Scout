@@ -5,13 +5,17 @@ import urllib.parse
 from playwright.sync_api import sync_playwright
 
 # === 配置区域 ===
-TARGET_DOMAIN_ID = "0705cupvvglq"
+# Legacy helper only: keep personal identifiers out of the public repository.
+# Set these two values in the shell before running the script.
+TARGET_DOMAIN_ID = os.getenv("CS_SCOUT_PLAYER_DOMAIN", "example-domain")
 # 1. 强制筛选 Mirage
 TARGET_MAP = "mirage"
 # 2. 结果保存文件
 OUTPUT_FILE = "mirage_download_links.txt"
-# 你的真实 UUID
-HARDCODED_UUID = "54617242-59ac-11f0-a93a-0c42a164bc3c"
+# 5E UUID, for example: $env:CS_SCOUT_PLAYER_UUID="..."
+HARDCODED_UUID = os.getenv(
+    "CS_SCOUT_PLAYER_UUID", "00000000-0000-0000-0000-000000000000"
+)
 
 
 def run_link_extractor():

@@ -1,18 +1,160 @@
-<!doctype html><meta charset="utf-8"><body style="background:#111">
-<canvas id="cv"></canvas>
-<script src="replay.js"></script>
-<script>
-const rounds=[
- {side:"CT",rtype:"Full",round_id:1,
-  path:[[0,-1500,400],[2,-1000,400],[4,-500,300],[6,-200,200]],
-  grenades:[{type:"smoke",throw_t:1,land_t:3,arc:[[1,-1400,400],[3,-600,300]],
-             land:[-600,300],expire_t:21}]},
- {side:"CT",rtype:"Full",round_id:2,
-  path:[[0,-1500,400],[2,-1200,600],[5,-900,700]],grenades:[]}
-];
-const p=new ReplayPlayer(document.getElementById("cv"),
- {radar:"/maps/de_mirage/radar.png",
-  transform:{pos_x:-3230,pos_y:1713,scale:5.0},
-  rounds, side:"CT", rtype:"Full"});
-p.start();
-</script></body>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+ <meta charset="utf-8">
+ <meta name="viewport" content="width=device-width,initial-scale=1">
+ <title>ReplayPlayer visual fixture</title>
+ <style>
+  body { margin: 0; padding: 16px; background: #0b0c12; color: #eee; font-family: system-ui; }
+  .controls { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  button { padding: 6px 12px; }
+  .view-toolbar { display: flex; align-items: center; gap: 10px; min-width: 0; margin-bottom: 10px; }
+  .views { display: flex; flex: 1 1 auto; gap: 8px; min-width: 0; overflow-x: auto; }
+  .side-buttons, .speed-buttons { display: flex; flex: 0 0 auto; gap: 4px; }
+  .views button, .side-buttons button, .speed-buttons button { border: 1px solid #333a50; border-radius: 6px; background: #1b1e2c; color: #aaa; }
+  .views button { flex: 0 0 auto; }
+  button.active { border-color: #5d86ff; color: #fff; box-shadow: inset 0 -2px #5d86ff; }
+  h2 { margin: 14px 0 8px; font-size: 15px; }
+  .replay-canvas {
+    display: block;
+    width: auto;
+    height: auto;
+    max-width: min(100%, 760px);
+    max-height: min(72vh, 760px);
+    max-height: min(72dvh, 760px);
+    margin: 0 auto 18px;
+    background: #11141e;
+  }
+  [hidden] { display: none !important; }
+ </style>
+</head>
+<body>
+ <div class="controls">
+  <div class="speed-buttons" role="group" aria-label="播放速度">
+   <button type="button" data-speed="1">1x</button>
+   <button type="button" class="active" data-speed="2">2x</button>
+   <button type="button" data-speed="4">4x</button>
+  </div>
+  <button id="pause" type="button">暂停</button>
+  <span id="time">0.0s</span>
+ </div>
+ <div class="view-toolbar">
+  <div class="views" role="group" aria-label="回放视图选择">
+   <button type="button" class="active" data-view="pistol" aria-pressed="true">手枪局（全员）</button>
+   <button type="button" data-view="buy" aria-pressed="false">测试玩家</button>
+  </div>
+  <div class="side-buttons" role="group" aria-label="阵营筛选">
+   <button type="button" class="active" data-side="CT" aria-pressed="true">CT</button>
+   <button type="button" data-side="T" aria-pressed="false">T</button>
+  </div>
+ </div>
+ <section id="pistol-panel">
+  <h2>合并 Pistol（粉色 / 蓝色为逐回合颜色覆盖）</h2>
+  <canvas id="pistol-cv" class="replay-canvas"></canvas>
+ </section>
+ <section id="buy-panel" hidden>
+  <h2>单玩家 Buy（含投掷物图标、方向箭头与死亡标记）</h2>
+  <canvas id="buy-cv" class="replay-canvas"></canvas>
+ </section>
+ <script src="replay.js"></script>
+ <script>
+  const pistolRounds = [
+    {
+      side: "CT", rtype: "Pistol", round_id: 1001, color: "#ef6aa8",
+      path: [[0,-1600,500],[5,-1200,450],[10,-800,300],[18,-400,150]], grenades: []
+    },
+    {
+      side: "CT", rtype: "Pistol", round_id: 2001, color: "#55c8ff",
+      path: [[0,-1450,250],[5,-1050,150],[10,-650,50],[18,-200,-100]], grenades: []
+    },
+    {
+      side: "T", rtype: "Pistol", round_id: 1002, color: "#ef6aa8",
+      path: [[0,500,-350],[8,100,-100],[18,-500,250]], grenades: []
+    }
+  ];
+  const buyRounds = [
+    {
+      side: "CT", rtype: "Buy", round_id: 1, death_t: 15,
+      path: [[0,-1500,400],[4,-1000,400],[8,-500,300],[12,-200,200],[15,100,250]],
+      grenades: [
+        {type:"smoke",throw_t:1,land_t:4,arc:[[1,-1400,400],[2,-1100,360],[4,-600,300]],land:[-600,300],expire_t:20},
+        {type:"flash",throw_t:3,land_t:6,arc:[[3,-1000,400],[4.5,-700,250],[6,-350,200]],land:[-350,200],expire_t:6.5},
+        {type:"he",throw_t:5,land_t:8,arc:[[5,-700,350],[6.5,-400,150],[8,-100,100]],land:[-100,100],expire_t:8.3},
+        {type:"molotov",throw_t:7,land_t:10,arc:[[7,-500,300],[8.5,-150,100],[10,200,50]],land:[200,50],expire_t:17},
+        {type:"decoy",throw_t:9,land_t:12,arc:[[9,-300,200],[10.5,0,0],[12,300,-50]],land:[300,-50],expire_t:20}
+      ]
+    },
+    {
+      side: "T", rtype: "Buy", round_id: 2,
+      path: [[0,500,-300],[5,200,-100],[10,-200,100],[18,-600,300]],
+      grenades: [
+        {type:"molotov",throw_t:7,land_t:10,arc:[[7,350,-200],[8.5,50,-20],[10,-250,120]],land:[-250,120],expire_t:17}
+      ]
+    }
+  ];
+  const options = {
+    radar: "/maps/de_mirage/radar.png",
+    transform: {pos_x:-3230,pos_y:1713,scale:5}
+  };
+  const pistolPlayer = new ReplayPlayer(document.getElementById("pistol-cv"), {
+    ...options, rounds:pistolRounds, side:"CT", rtype:"Pistol"
+  });
+  const buyPlayer = new ReplayPlayer(document.getElementById("buy-cv"), {
+    ...options, rounds:buyRounds, side:"CT", rtype:"Buy"
+  });
+  const views = {
+    pistol: {panel:document.getElementById("pistol-panel"), player:pistolPlayer},
+    buy: {panel:document.getElementById("buy-panel"), player:buyPlayer}
+  };
+  let activeView = "pistol";
+  for (const button of document.querySelectorAll("[data-view]")) {
+    button.onclick = () => {
+      activeView = button.dataset.view;
+      for (const candidate of document.querySelectorAll("[data-view]")) {
+        const active = candidate === button;
+        candidate.classList.toggle("active", active);
+        candidate.setAttribute("aria-pressed", String(active));
+      }
+      for (const [key, view] of Object.entries(views)) view.panel.hidden = key !== activeView;
+    };
+  }
+  let side = "CT", playing = true, speed = 2, elapsed = 0, last = null;
+  for (const button of document.querySelectorAll("[data-side]")) {
+    button.onclick = () => {
+      side = button.dataset.side;
+      pistolPlayer.setFilter(side, "Pistol");
+      buyPlayer.setFilter(side, "Buy");
+      for (const candidate of document.querySelectorAll("[data-side]")) {
+        const active = candidate === button;
+        candidate.classList.toggle("active", active);
+        candidate.setAttribute("aria-pressed", String(active));
+      }
+    };
+  }
+  for (const button of document.querySelectorAll("[data-speed]")) {
+    button.onclick = () => {
+      speed = Number(button.dataset.speed);
+      last = null;
+      for (const candidate of document.querySelectorAll("[data-speed]")) {
+        candidate.classList.toggle("active", candidate === button);
+      }
+    };
+  }
+  document.getElementById("pause").onclick = event => {
+    playing = !playing;
+    last = null;
+    event.target.textContent = playing ? "暂停" : "播放";
+  };
+  function frame(timestamp) {
+    if (last === null) last = timestamp;
+    if (playing) elapsed = (elapsed + (timestamp-last)/1000 * speed * PLAYBACK_S / WINDOW_S) % PLAYBACK_S;
+    last = timestamp;
+    const gameTime = elapsed / PLAYBACK_S * WINDOW_S;
+    views[activeView].player.drawAt(gameTime);
+    document.getElementById("time").textContent = `${gameTime.toFixed(1)}s`;
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+ </script>
+</body>
+</html>

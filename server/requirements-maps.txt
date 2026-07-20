@@ -1,0 +1,2 @@
+# One-time deployment tooling used by setup_maps.py; not required at runtime.
+awpy==2.0.2

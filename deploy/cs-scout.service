@@ -1,0 +1,52 @@
+[Unit]
+Description=CS-Scout 2.0 web and demo analysis service
+Documentation=https://github.com/ORG/CS_Scout
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=cs-scout
+Group=cs-scout
+WorkingDirectory=/opt/cs-scout/current/server
+EnvironmentFile=/etc/cs-scout/cs-scout.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+# Keep exactly one WSGI process. The application state, analysis mutex and
+# demo single-flight locks are process-local. Four request threads keep UI
+# polling responsive while the background analysis owns its own bounded pools.
+ExecStart=/opt/cs-scout/current/.venv/bin/gunicorn --workers 1 --threads 4 --worker-class gthread --bind 127.0.0.1:5000 --access-logfile - --error-logfile - --capture-output --timeout 30 --graceful-timeout 30 --keep-alive 5 web_server:app
+
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=30s
+TimeoutStopSec=60s
+KillMode=control-group
+OOMPolicy=stop
+
+# Runtime hardening. All writable application paths must live below
+# /var/lib/cs-scout and be selected by the environment file.
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/cs-scout
+TasksMax=512
+LimitNOFILE=8192
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cs-scout
+
+[Install]
+WantedBy=multi-user.target

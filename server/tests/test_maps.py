@@ -25,3 +25,19 @@ def test_load_map_missing_raises(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "MAPS_DIR", str(tmp_path))
     with pytest.raises(FileNotFoundError):
         maps.load_map("de_nope")
+
+def test_available_maps_requires_metadata_and_radar(monkeypatch, tmp_path):
+    maps_root = tmp_path / "maps"
+    complete = maps_root / "de_complete"
+    meta_only = maps_root / "de_meta_only"
+    radar_only = maps_root / "de_radar_only"
+    for directory in (complete, meta_only, radar_only):
+        directory.mkdir(parents=True)
+    (complete / "meta.json").write_text("{}", encoding="utf-8")
+    (complete / "radar.png").write_bytes(b"png")
+    (meta_only / "meta.json").write_text("{}", encoding="utf-8")
+    (radar_only / "radar.png").write_bytes(b"png")
+
+    monkeypatch.setattr(config, "MAPS_DIR", str(maps_root))
+
+    assert maps.available_maps() == ["de_complete"]

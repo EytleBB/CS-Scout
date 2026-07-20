@@ -6,6 +6,10 @@ __pycache__/
 venv/
 .venv/
 *.egg-info/
+.pytest_cache/
+.pytest-tmp*/
+.pytest_*/
+.pytest-*/
 
 # Demo files (large binaries)
 server/demos_opponents/
@@ -22,6 +26,9 @@ server/output/
 server/data/maps/
 
 # Secrets / local config
+.env
+.env.*
+!.env.example
 # server/config.py  — committed in 2.0 (no real secrets)
 
 # IDE
@@ -33,6 +40,10 @@ server/data/maps/
 # Internal tooling
 .superpowers/
 .worktrees/
+/AGENTS.md
+
+# Locally built release assets (uploaded to GitHub Releases, not committed)
+/dist/
 
 # OS
 .DS_Store

@@ -5,6 +5,10 @@ def build(username, domain, steamid, map_name, rounds, combat):
     m = maps.load_map(map_name)
     out_rounds = []
     for r in rounds:
+        # parse_demo already excludes dropped economy rounds.  Keep this final
+        # guard so callers cannot accidentally publish a side-only/None round.
+        if r.get("side") not in {"CT", "T"} or r.get("rtype") not in {"Pistol", "Buy"}:
+            continue
         out_rounds.append({
             "side": r["side"], "rtype": r["rtype"], "round_id": r["official_num"],
             "path": r["path"], "grenades": r["grenades"],
