@@ -1,14 +1,22 @@
-"""Combat stats: global K/D (scoreboard) + CT-side AWP rate."""
+"""Combat stats: global K/D and the share of rounds with an AWP held."""
 import logging
-import numpy as np
 import pandas as pd
 from demoparser2 import DemoParser
+import config
 import parse
 
 log = logging.getLogger("combat")
-SNIPER_EVENT_NAMES = {"awp", "ssg08", "g3sg1", "scar20"}
 
 def parse_combat_stats(path, steamid):
+    """Parse one demo without allowing malformed combat data to abort a run."""
+    try:
+        return _parse_combat_stats(path, steamid)
+    except Exception as exc:
+        log.warning("combat parse failed %s: %s", path, exc)
+        return None
+
+
+def _parse_combat_stats(path, steamid):
     sid = str(steamid)
     try:
         p = DemoParser(path)
@@ -37,39 +45,78 @@ def parse_combat_stats(path, steamid):
 
     rounds = parse.get_round_table(evts)
     classified = parse.classify_rounds(p, rounds, {sid}) if rounds else []
-    ct_rounds = [r for r in classified if r["side"] == "CT"]
-    if not ct_rounds:
-        return {"kd": kd_val, "ct_kills": 0, "awp_kills": 0}
+    # The economy filter is deliberately not applied here: the denominator is
+    # every round the player participated in, on both CT and T.
+    played = [r for r in classified if r.get("side") in {"CT", "T"}]
+    awp_rounds = _count_awp_hold_rounds(p, played, sid)
+    return {"kd": kd_val, "awp_rounds": awp_rounds,
+            "total_rounds": len(played)}
 
-    fe = np.array([r["fe_tick"] for r in ct_rounds])
-    end = np.array([r["end_tick"] for r in ct_rounds])
-    def in_ct(ticks):
-        t = ticks.values[:, None]
-        m = (t >= fe) & (t <= end)
-        return m.any(axis=1)
 
-    ct_kills = awp_kills = 0
-    dd = evts.get("player_death")
-    if dd is not None:
-        if not isinstance(dd, pd.DataFrame):
-            dd = pd.DataFrame(dd)
-        if not dd.empty and "attacker_steamid" in dd.columns:
-            dd["attacker_steamid"] = dd["attacker_steamid"].astype(str)
-            dd["user_steamid"] = dd["user_steamid"].astype(str)
-            dd = dd[in_ct(dd["tick"])]
-            kills = dd[(dd["attacker_steamid"] == sid) &
-                       (dd["attacker_steamid"] != dd["user_steamid"])]
-            ct_kills = len(kills)
-            if "weapon" in kills.columns:
-                awp_kills = int(kills["weapon"].isin(SNIPER_EVENT_NAMES).sum())
-    return {"kd": kd_val, "ct_kills": ct_kills, "awp_kills": awp_kills}
+def _count_awp_hold_rounds(parser, played, sid):
+    """Count rounds where ``sid`` held an AWP at any sampled tick."""
+    if not played:
+        return 0
+
+    sample_ticks = []
+    tick_round = {}
+    for r in played:
+        # Combat stats cover the full round, not only the shorter replay window;
+        # otherwise an AWP picked up late in a round would be missed.
+        for tick in range(r["fe_tick"], r["end_tick"] + 1,
+                          config.SAMPLE_EVERY):
+            sample_ticks.append(tick)
+            tick_round[tick] = r["official_num"]
+    if not sample_ticks:
+        return 0
+
+    try:
+        df = parser.parse_ticks(["inventory", "steamid"], ticks=sample_ticks)
+    except Exception as exc:
+        log.warning("inventory parse failed while calculating AWP rate: %s", exc)
+        return 0
+    if not isinstance(df, pd.DataFrame):
+        df = pd.DataFrame(df)
+    required = {"tick", "steamid", "inventory"}
+    if df.empty or not required.issubset(df.columns):
+        return 0
+
+    df = df.copy()
+    df["steamid"] = df["steamid"].astype(str)
+    df = df[df["steamid"] == str(sid)]
+    held_rounds = set()
+    for tick, inventory in zip(df["tick"], df["inventory"]):
+        try:
+            round_num = tick_round.get(int(tick))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if round_num is not None and _inventory_contains_awp(inventory):
+            held_rounds.add(round_num)
+    return len(held_rounds)
+
+
+def _inventory_contains_awp(inventory):
+    """Handle demoparser inventory lists plus string/JSON-like test values."""
+    if inventory is None:
+        return False
+    if isinstance(inventory, str):
+        return "AWP" in inventory
+    if isinstance(inventory, dict):
+        return any(_inventory_contains_awp(value) for value in inventory.values())
+    try:
+        return any(_inventory_contains_awp(item) for item in inventory)
+    except TypeError:
+        return False
 
 def aggregate_combat_stats(stats_list):
     valid = [s for s in stats_list if s is not None]
     if not valid:
         return None
     kd = round(sum(s["kd"] for s in valid) / len(valid), 2)
-    tk = sum(s["ct_kills"] for s in valid)
-    ak = sum(s["awp_kills"] for s in valid)
-    awp_rate = round(ak / tk * 100, 1) if tk > 0 else 0.0
+    total_rounds = sum(s.get("total_rounds", 0) for s in valid)
+    awp_rounds = sum(s.get("awp_rounds", 0) for s in valid)
+    awp_rate = (
+        round(awp_rounds / total_rounds * 100, 1)
+        if total_rounds > 0 else 0.0
+    )
     return {"kd": kd, "awp_rate": awp_rate}

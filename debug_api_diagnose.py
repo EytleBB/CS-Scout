@@ -1,96 +1,57 @@
-"""
-诊断脚本：检查玩家为什么没有 Mirage demo 可用
-只做 API 查询，不下载任何文件
-用法: python debug_api_diagnose.py
-"""
-import requests
-import urllib3
-urllib3.disable_warnings()
+"""诊断 5E 玩家在指定地图上是否有可下载 demo；不会下载文件。"""
 
-ARENA = "https://arena.5eplay.com"
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130.0"}
-TIMEOUT = 15
+import argparse
+import sys
 
-USERNAMES = ["emooQAQ", "浮世唯", "1015_", "holyhao", "Alluwantpeek"]
+from server.api_client import DemoLookupError, get_demos_by_domain, search_player
 
 
-def search_player(username):
-    url = f"{ARENA}/api/search?keywords={requests.utils.quote(username)}"
-    r = requests.get(url, timeout=TIMEOUT, verify=False, headers=HEADERS)
-    d = r.json()
-    users = d.get("data", {}).get("user", {}).get("list", [])
-    if not users:
-        return None, None
-    return users[0]["domain"], users[0]["username"]
+for stream in (sys.stdout, sys.stderr):
+    if hasattr(stream, "reconfigure"):
+        stream.reconfigure(encoding="utf-8")
 
 
-def probe_domain(domain):
-    """尝试所有 match_type，返回每种结果概要"""
-    results = {}
-    for candidate in ["", "?match_type=9", "?match_type=1", "?match_type=8",
-                      "?match_type=2", "?match_type=3", "?match_type=5"]:
-        try:
-            url = f"{ARENA}/api/data/player/{domain}{candidate}"
-            r = requests.get(url, timeout=TIMEOUT, verify=False, headers=HEADERS)
-            j = r.json()
-            matches = j.get("match", [])
-            if not matches:
-                results[candidate or "(no param)"] = "无 match 字段或空"
-                continue
+def diagnose(username, map_name, count):
+    print(f"\n{'=' * 60}")
+    print(f"玩家: {username} | 地图: {map_name}")
+    print("=" * 60)
 
-            # 统计各地图数量和 demo_url 情况
-            map_counts = {}
-            mirage_with_demo = 0
-            mirage_no_demo = 0
-            for m in matches:
-                mp = m.get("map", "unknown")
-                map_counts[mp] = map_counts.get(mp, 0) + 1
-                if mp == "de_mirage":
-                    if m.get("demo_url"):
-                        mirage_with_demo += 1
-                    else:
-                        mirage_no_demo += 1
+    try:
+        domain, matched = search_player(username)
+        demos = get_demos_by_domain(domain, map_name, count=count)
+    except DemoLookupError as exc:
+        print(f"  API 查询失败: {exc}")
+        return
+    except (RuntimeError, ValueError) as exc:
+        print(f"  玩家查询失败: {exc}")
+        return
 
-            results[candidate or "(no param)"] = {
-                "total_matches_on_page1": len(matches),
-                "map_distribution": dict(sorted(map_counts.items(), key=lambda x: -x[1])),
-                "mirage_with_demo_url": mirage_with_demo,
-                "mirage_no_demo_url": mirage_no_demo,
-            }
-        except Exception as e:
-            results[candidate or "(no param)"] = f"ERROR: {e}"
-    return results
+    print(f"  找到玩家: matched_name={matched!r}, domain={domain}")
+    if not demos:
+        print("  该地图没有可下载的历史 demo（API 已正常返回）。")
+        return
+
+    print(f"  可用 demo: {len(demos)}")
+    for index, demo in enumerate(demos, start=1):
+        print(f"    {index:>2}. match_code={demo['match_code']}")
 
 
 def main():
-    for username in USERNAMES:
-        print(f"\n{'='*60}")
-        print(f"玩家: {username}")
-        print("="*60)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "usernames",
+        nargs="+",
+        help="一个或多个需要诊断的 5E 用户名",
+    )
+    parser.add_argument("--map", dest="map_name", default="de_mirage")
+    parser.add_argument("--count", type=int, default=10)
+    args = parser.parse_args()
 
-        domain, matched = search_player(username)
-        if not domain:
-            print("  ❌ 搜索失败：5E 上未找到该玩家")
-            continue
-        print(f"  ✓ 找到: matched_name={matched!r}, domain={domain}")
+    if args.count < 1:
+        parser.error("--count 必须大于 0")
 
-        probe = probe_domain(domain)
-        for param, info in probe.items():
-            if isinstance(info, dict):
-                maps = info["map_distribution"]
-                mirage_d = info["mirage_with_demo_url"]
-                mirage_nd = info["mirage_no_demo_url"]
-                top_maps = ", ".join(f"{k}({v})" for k, v in list(maps.items())[:5])
-                status = ""
-                if mirage_d > 0:
-                    status = f"✓ {mirage_d} 个 Mirage demo 可用"
-                elif mirage_nd > 0:
-                    status = f"⚠ {mirage_nd} 个 Mirage 局但 demo_url 为空"
-                elif "de_mirage" not in maps:
-                    status = "✗ 该页无 Mirage 局"
-                print(f"  [{param:20s}] 共{info['total_matches_on_page1']}场 | 地图: {top_maps} | {status}")
-            else:
-                print(f"  [{param:20s}] {info}")
+    for username in args.usernames:
+        diagnose(username, args.map_name, args.count)
 
 
 if __name__ == "__main__":

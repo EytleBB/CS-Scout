@@ -1,7 +1,3 @@
-flask
-requests
-urllib3
-pandas
-numpy
-demoparser2>=0.41.3
-awpy
+# Backward-compatible full installation: runtime plus one-time map tooling.
+-r requirements-runtime.txt
+-r requirements-maps.txt

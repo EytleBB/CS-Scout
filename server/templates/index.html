@@ -1,55 +1,626 @@
-<!doctype html><html lang="zh"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CS-Scout 2.0</title>
-<style>
- body{margin:0;font-family:system-ui;background:#0f0f1a;color:#eee}
- header{height:50px;display:flex;align-items:center;padding:0 16px;
-   background:#16162a;border-bottom:1px solid #2a2a44;font-weight:600}
- .wrap{display:flex;height:calc(100vh - 50px)}
- .side{width:240px;padding:12px;border-right:1px solid #2a2a44;overflow:auto}
- .main{flex:1;padding:12px;overflow:auto}
- input,select{width:100%;margin:4px 0;padding:6px;background:#1e1e36;
-   color:#eee;border:1px solid #333;border-radius:4px;box-sizing:border-box}
- button{width:100%;padding:8px;margin-top:8px;background:#3a6df0;color:#fff;
-   border:0;border-radius:4px;cursor:pointer}
- .card{background:#16162a;border:1px solid #2a2a44;border-radius:8px;
-   padding:12px;margin-bottom:16px}
- .tabs button{width:auto;display:inline-block;margin-right:6px;background:#26264a}
- .tabs button.active{background:#3a6df0}
- .grid{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
- .cell{flex:1;min-width:260px}
- .cell h4{margin:4px 0;font-size:13px;color:#9ad}
- canvas{width:100%;background:#1a1a2e;border-radius:4px}
- .stat{display:inline-block;margin-right:16px;font-size:14px}
- #failed{color:#ff6b6b;font-size:13px;margin-top:12px}
- .ctrls{margin-left:auto;display:flex;align-items:center;gap:10px;font-weight:400;font-size:13px}
- .ctrls button{width:34px;padding:4px 0;margin:0;background:#26264a;font-size:14px}
- .ctrls input[type=range]{width:260px;margin:0}
- .ctrls #timelbl{color:#9ad;font-family:monospace;min-width:96px;text-align:right}
-</style></head><body>
-<header>CS-Scout 2.0 — 对手回放分析
- <span class="ctrls">
-  <button id="playpause" title="播放/暂停">⏸</button>
-  <input id="scrub" type="range" min="0" max="1000" value="0" title="进度（可拖动跳转）">
-  <span id="timelbl">0.0 / 20.0s</span>
- </span>
-</header>
-<div class="wrap">
- <div class="side">
-  <select id="map"></select>
-  <input id="u0" placeholder="对手用户名 1">
-  <input id="u1" placeholder="对手用户名 2">
-  <input id="u2" placeholder="对手用户名 3">
-  <input id="u3" placeholder="对手用户名 4">
-  <input id="u4" placeholder="对手用户名 5">
-  <input id="depth" type="number" min="1" max="10" value="6" title="每人 demo 数">
-  <input id="key" placeholder="访问密钥" type="password">
-  <button id="run">开始扫描</button>
-  <div id="status"></div>
-  <div id="failed"></div>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+ <meta charset="utf-8">
+ <meta name="viewport" content="width=device-width,initial-scale=1">
+ <title>CS-Scout 2.0</title>
+ <link rel="icon" type="image/webp" href="{{ url_for('static', filename='logo.webp') }}?v=20260720">
+ <style>
+  :root {
+    color-scheme: dark;
+    --bg-color-main: #141414;
+    --bg-color-content: #1f1f1f;
+    --bg-color-elevated: #252525;
+    --text-color-primary: #f0f0f0;
+    --text-color-secondary: #a0a0a0;
+    --border-color: #303030;
+    --border-color-light: rgba(255, 255, 255, .1);
+    --glass-bg: rgba(25, 25, 25, .66);
+    --glass-blur: blur(12px) saturate(180%);
+    --accent: #f0f0f0;
+    --accent-ink: #171717;
+    --danger: #ff7f7f;
+    --header-height: 64px;
+    --radius-small: 8px;
+    --radius-large: 12px;
+    --shadow-soft: 0 16px 48px rgba(0, 0, 0, .22);
+
+    /* Compatibility aliases for existing component styles. */
+    --bg: var(--bg-color-main);
+    --panel: var(--bg-color-content);
+    --panel-2: var(--bg-color-elevated);
+    --line: var(--border-color);
+    --text: var(--text-color-primary);
+    --muted: var(--text-color-secondary);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { min-height: 100%; }
+  html { background: var(--bg-color-main); }
+  body {
+    margin: 0;
+    overflow: hidden;
+    background:
+      radial-gradient(circle at 78% 4%, rgba(255, 255, 255, .055), transparent 27rem),
+      radial-gradient(circle at 18% 88%, rgba(255, 255, 255, .025), transparent 32rem),
+      var(--bg-color-main);
+    color: var(--text-color-primary);
+    font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+      "Helvetica Neue", Arial, "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  body::before {
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    content: "";
+    pointer-events: none;
+    opacity: .18;
+    background-image:
+      linear-gradient(rgba(255, 255, 255, .025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, .025) 1px, transparent 1px);
+    background-size: 48px 48px;
+  }
+  ::selection { background: #e8e8e8; color: #171717; }
+  button, input, select { font: inherit; }
+  button { cursor: pointer; }
+  button, input, select { -webkit-tap-highlight-color: transparent; }
+  button:focus-visible, input:focus-visible, select:focus-visible {
+    outline: 2px solid rgba(240, 240, 240, .82);
+    outline-offset: 2px;
+  }
+  input::placeholder { color: #707070; }
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus {
+    -webkit-text-fill-color: var(--text-color-primary);
+    box-shadow: 0 0 0 1000px var(--bg-color-elevated) inset;
+    caret-color: var(--text-color-primary);
+  }
+  * { scrollbar-color: #444 transparent; scrollbar-width: thin; }
+  *::-webkit-scrollbar { width: 8px; height: 8px; }
+  *::-webkit-scrollbar-thumb { background: #444; border-radius: 999px; }
+
+  .glass-panel {
+    background-color: var(--glass-bg);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    border: 1px solid var(--border-color-light);
+    border-radius: var(--radius-small);
+  }
+
+  .app-header {
+    position: relative;
+    z-index: 20;
+    min-height: var(--header-height);
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    border-width: 0 0 1px;
+    border-color: var(--border-color-light);
+    border-radius: 0;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, .18);
+  }
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    min-width: max-content;
+    color: var(--text-color-primary);
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: .01em;
+    white-space: nowrap;
+  }
+  .brand-logo {
+    width: 34px;
+    height: 34px;
+    border: 1px solid rgba(255, 255, 255, .14);
+    border-radius: 9px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, .35);
+  }
+  .brand-copy { display: grid; gap: 1px; }
+  .brand span {
+    color: var(--text-color-secondary);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+  }
+  .global-controls {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .speed-control,
+  .view-side-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .control-caption {
+    color: var(--text-color-secondary);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+  .side-toggle,
+  .speed-toggle {
+    display: inline-flex;
+    overflow: hidden;
+    padding: 3px;
+    border: 1px solid var(--border-color-light);
+    border-radius: 9px;
+    background: rgba(0, 0, 0, .18);
+  }
+  .side-toggle button,
+  .speed-toggle button {
+    height: 34px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-color-secondary);
+    font-size: 12px;
+    font-weight: 750;
+    transition: color .18s ease, background-color .18s ease, box-shadow .18s ease;
+  }
+  .side-toggle button { width: 44px; }
+  .speed-toggle button { min-width: 40px; padding: 0 9px; }
+  .side-toggle button:hover,
+  .speed-toggle button:hover { color: var(--text-color-primary); }
+  .side-toggle button.active,
+  .speed-toggle button.active {
+    background: var(--text-color-primary);
+    color: var(--accent-ink);
+    box-shadow: 0 3px 10px rgba(0, 0, 0, .26);
+  }
+  #playpause {
+    width: 42px;
+    height: 42px;
+    padding: 0;
+    border: 1px solid var(--border-color-light);
+    border-radius: 9px;
+    background: rgba(255, 255, 255, .055);
+    color: var(--text-color-primary);
+    transition: border-color .18s ease, background-color .18s ease, transform .18s ease;
+  }
+  #playpause:hover {
+    border-color: rgba(255, 255, 255, .2);
+    background: rgba(255, 255, 255, .1);
+  }
+  #playpause:active { transform: translateY(1px); }
+  .timeline-control { display: flex; align-items: center; gap: 10px; }
+  #scrub {
+    width: clamp(150px, 25vw, 320px);
+    height: 20px;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+  #timelbl {
+    min-width: 94px;
+    color: var(--text-color-secondary);
+    font: 12px ui-monospace, SFMono-Regular, Consolas, monospace;
+    text-align: right;
+  }
+
+  .app-container,
+  .layout {
+    display: flex;
+    height: calc(100vh - var(--header-height));
+    height: calc(100dvh - var(--header-height));
+    min-height: 0;
+  }
+  .sidebar {
+    width: 276px;
+    flex: 0 0 276px;
+    padding: 24px 18px;
+    overflow-y: auto;
+    border-right: 1px solid var(--border-color);
+    background-color: rgba(26, 26, 26, .86);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+  }
+  .form-section + .form-section {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid rgba(255, 255, 255, .07);
+  }
+  .sidebar label {
+    display: block;
+    margin: 10px 0 5px;
+    color: var(--text-color-secondary);
+    font-size: 11px;
+    font-weight: 550;
+  }
+  .sidebar input,
+  .sidebar select {
+    width: 100%;
+    height: 40px;
+    margin: 0 0 7px;
+    padding: 0 11px;
+    border: 1px solid var(--border-color);
+    border-radius: 7px;
+    background: rgba(31, 31, 31, .94);
+    color: var(--text-color-primary);
+    outline: none;
+    transition: border-color .18s ease, background-color .18s ease, box-shadow .18s ease;
+  }
+  .sidebar input:hover,
+  .sidebar select:hover { border-color: #444; }
+  .sidebar input:focus,
+  .sidebar select:focus {
+    border-color: #777;
+    background: #242424;
+    box-shadow: 0 0 0 3px rgba(255, 255, 255, .055);
+  }
+  .sidebar input:disabled,
+  .sidebar select:disabled { cursor: not-allowed; opacity: .55; }
+  .player-inputs { display: grid; gap: 0; }
+  .analysis-mode-toggle {
+    width: 100%;
+    margin-top: 5px;
+    padding: 3px;
+    display: flex;
+    gap: 3px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: rgba(0, 0, 0, .18);
+  }
+  .analysis-mode-toggle button {
+    min-height: 36px;
+    flex: 1 1 50%;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-color-secondary);
+    font-size: 12px;
+    font-weight: 700;
+    transition: color .18s ease, background-color .18s ease, box-shadow .18s ease;
+  }
+  .analysis-mode-toggle button:hover:not(:disabled) { color: var(--text-color-primary); }
+  .analysis-mode-toggle button.active {
+    background: var(--text-color-primary);
+    color: var(--accent-ink);
+    box-shadow: 0 3px 10px rgba(0, 0, 0, .26);
+  }
+  .analysis-mode-toggle button:disabled { cursor: not-allowed; opacity: .55; }
+  #run {
+    width: 100%;
+    min-height: 42px;
+    margin-top: 8px;
+    padding: 9px 13px;
+    border: 1px solid var(--text-color-primary);
+    border-radius: 7px;
+    background: var(--text-color-primary);
+    color: var(--accent-ink);
+    font-weight: 700;
+    transition: background-color .18s ease, color .18s ease, transform .18s ease, opacity .18s ease;
+  }
+  #run::after { margin-left: 8px; content: "→"; }
+  #run:hover:not(:disabled) { background: transparent; color: var(--text-color-primary); }
+  #run:active:not(:disabled) { transform: translateY(1px); }
+  #run:disabled { cursor: not-allowed; opacity: .48; }
+  #status,
+  #failed {
+    margin-top: 12px;
+    padding: 10px 11px;
+    border: 1px solid var(--border-color-light);
+    border-radius: 7px;
+    background: rgba(0, 0, 0, .16);
+    font-size: 11px;
+    line-height: 1.55;
+    overflow-wrap: anywhere;
+  }
+  #status { color: var(--text-color-secondary); }
+  #failed { color: var(--danger); }
+  #status:empty,
+  #failed:empty { display: none; }
+
+  .content-area {
+    min-width: 0;
+    flex: 1;
+    padding: 16px 20px;
+    overflow-y: auto;
+  }
+  .content-shell { width: min(100%, 1280px); margin: 0 auto; }
+  .map-view {
+    min-height: 0;
+    padding: 12px;
+    border-radius: var(--radius-large);
+    box-shadow: var(--shadow-soft);
+  }
+  .empty-state {
+    min-height: min(560px, calc(100dvh - 220px));
+    padding: 34px 20px;
+    display: grid;
+    place-items: center;
+    color: var(--text-color-secondary);
+    text-align: center;
+  }
+  .empty-state-inner { width: min(100%, 520px); }
+  .map-placeholder {
+    position: relative;
+    width: min(100%, 420px);
+    aspect-ratio: 16 / 9;
+    margin: 0 auto 25px;
+    overflow: hidden;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-small);
+    background:
+      radial-gradient(circle at center, rgba(255, 255, 255, .055) 0 2px, transparent 3px),
+      repeating-linear-gradient(45deg, #252525, #252525 10px, #202020 10px, #202020 20px);
+    box-shadow: inset 0 0 60px rgba(0, 0, 0, .34);
+  }
+  .map-placeholder::before,
+  .map-placeholder::after {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    content: "";
+    background: rgba(255, 255, 255, .15);
+    transform: translate(-50%, -50%);
+  }
+  .map-placeholder::before { width: 72px; height: 1px; }
+  .map-placeholder::after { width: 1px; height: 72px; }
+  .map-placeholder-ring {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 46px;
+    height: 46px;
+    border: 1px solid rgba(255, 255, 255, .15);
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+  }
+  .empty-state strong {
+    display: block;
+    margin-bottom: 7px;
+    color: var(--text-color-primary);
+    font-size: 15px;
+    font-weight: 600;
+  }
+  .empty-state p { margin: 0; font-size: 12px; line-height: 1.65; }
+  .view-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+    margin-bottom: 10px;
+  }
+  .view-switcher {
+    display: flex;
+    flex: 1 1 auto;
+    gap: 8px;
+    min-width: 0;
+    padding: 2px 0 4px;
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+  .view-side-controls { flex: 0 0 auto; }
+  .view-switcher button {
+    min-height: 38px;
+    flex: 0 0 auto;
+    max-width: 220px;
+    padding: 8px 14px;
+    overflow: hidden;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: rgba(31, 31, 31, .92);
+    color: var(--text-color-secondary);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transition: border-color .18s ease, background-color .18s ease, color .18s ease;
+  }
+  .view-switcher button:hover { border-color: #505050; color: var(--text-color-primary); }
+  .view-switcher button.active {
+    border-color: var(--view-color, var(--accent));
+    background: color-mix(in srgb, var(--view-color, var(--accent)) 16%, var(--bg-color-content));
+    color: var(--text-color-primary);
+    box-shadow: inset 0 -2px var(--view-color, var(--accent));
+  }
+  .card {
+    margin: 0;
+    padding: 12px;
+    border: 1px solid var(--border-color-light);
+    border-radius: 10px;
+    background: rgba(31, 31, 31, .96);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, .17);
+  }
+  .card-heading {
+    min-height: 34px;
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 9px 18px;
+  }
+  .card-heading h2 { margin: 0; font-size: 16px; font-weight: 650; }
+  .card-heading .subtitle { color: var(--text-color-secondary); font-size: 11px; }
+  .stats { display: flex; flex-wrap: wrap; gap: 7px; color: var(--text-color-secondary); font-size: 11px; }
+  .stat {
+    padding: 5px 8px;
+    border: 1px solid rgba(255, 255, 255, .065);
+    border-radius: 6px;
+    background: rgba(0, 0, 0, .15);
+  }
+  .stat strong { color: var(--text-color-primary); font-weight: 700; }
+  .legend { display: flex; flex-wrap: wrap; gap: 7px 14px; margin-left: auto; }
+  .pistol-legend { justify-content: flex-end; margin: 0 0 8px; }
+  .legend-item { display: inline-flex; align-items: center; gap: 6px; color: var(--text-color-secondary); font-size: 11px; }
+  .legend-swatch { width: 9px; height: 9px; border-radius: 3px; box-shadow: 0 0 0 1px rgba(255, 255, 255, .13); }
+  .replay-canvas {
+    display: block;
+    width: auto;
+    height: auto;
+    max-width: min(100%, 760px);
+    max-height: min(72vh, calc(100vh - var(--header-height) - 190px), 760px);
+    max-height: min(72dvh, calc(100dvh - var(--header-height) - 190px), 760px);
+    margin: 0 auto;
+    border: 1px solid rgba(255, 255, 255, .06);
+    border-radius: 7px;
+    background: #181818;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, .22);
+  }
+  .buy-label {
+    margin-left: auto;
+    padding: 5px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-color-secondary);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+  [hidden] { display: none !important; }
+
+  @supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+    .glass-panel { background-color: rgba(25, 25, 25, .96); }
+    .sidebar { background-color: #1a1a1a; }
+  }
+
+  @media (max-width: 1024px) {
+    .sidebar { width: 244px; flex-basis: 244px; padding-inline: 15px; }
+    .content-area { padding: 22px; }
+    .control-caption { display: none; }
+  }
+
+  @media (max-width: 760px) {
+    body { overflow: auto; }
+    .app-header { position: sticky; top: 0; flex-wrap: wrap; padding: 10px 14px; }
+    .global-controls { width: 100%; margin-left: 0; }
+    .timeline-control { min-width: 0; flex: 1; }
+    #scrub { min-width: 90px; flex: 1; }
+    .app-container,
+    .layout { display: block; height: auto; min-height: calc(100dvh - var(--header-height)); }
+    .sidebar {
+      width: 100%;
+      padding: 20px 18px;
+      overflow: visible;
+      border-right: 0;
+      border-bottom: 1px solid var(--border-color);
+    }
+    .content-area { padding: 18px 14px 24px; overflow: visible; }
+    .map-view { min-height: 0; padding: 12px; }
+    .empty-state { min-height: 400px; }
+    .view-switcher button { max-width: 180px; }
+    .legend { width: 100%; margin-left: 0; }
+    .buy-label { margin-left: 0; }
+  }
+
+  @media (min-width: 481px) and (max-width: 760px) {
+    .player-inputs { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 8px; }
+  }
+
+  @media (max-width: 480px) {
+    .app-header { gap: 10px; }
+    .brand-logo { width: 32px; height: 32px; }
+    .global-controls {
+      display: grid;
+      grid-template-columns: auto 42px 1fr;
+      gap: 8px;
+    }
+    .side-toggle button,
+    .speed-toggle button { height: 38px; }
+    .timeline-control { grid-column: 1 / -1; width: 100%; }
+    #timelbl { min-width: 82px; font-size: 11px; }
+    .content-area { padding-inline: 10px; }
+    .map-view { padding: 9px; }
+    .card { padding: 11px; }
+    .empty-state { min-height: 340px; padding: 24px 10px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
+  }
+ </style>
+</head>
+<body>
+ <header class="app-header glass-panel">
+  <div class="brand">
+   <img class="brand-logo" src="/static/logo.webp" alt="">
+   <div class="brand-copy">CS-Scout <span>Replay intelligence · 2.0</span></div>
+  </div>
+  <div class="global-controls" aria-label="全局回放控制">
+   <div class="speed-control">
+    <span class="control-caption">速度</span>
+    <div class="speed-toggle" role="group" aria-label="播放速度">
+     <button id="speed-1" type="button" data-playback-speed="1" aria-pressed="false">1x</button>
+     <button id="speed-2" type="button" data-playback-speed="2" class="active" aria-pressed="true">2x</button>
+     <button id="speed-4" type="button" data-playback-speed="4" aria-pressed="false">4x</button>
+    </div>
+   </div>
+   <button id="playpause" type="button" title="暂停" aria-label="暂停回放">⏸</button>
+   <div class="timeline-control">
+    <input id="scrub" type="range" min="0" max="1000" value="0" aria-label="回放进度">
+    <span id="timelbl">0.0 / 20.0s</span>
+   </div>
+  </div>
+ </header>
+  <div class="layout app-container">
+   <aside class="sidebar" aria-label="扫描设置">
+    <div class="form-section">
+     <label for="map">地图</label>
+    <select id="map" aria-label="地图"></select>
+    <label for="depth">每人 Demo 数</label>
+    <input id="depth" type="number" min="1" max="10" value="6">
+    </div>
+    <div class="form-section">
+     <label for="u0">5E 用户名</label>
+    <div class="player-inputs">
+     <input id="u0" autocomplete="off" maxlength="64" placeholder="对手用户名 1">
+     <input id="u1" autocomplete="off" maxlength="64" aria-label="对手用户名 2" placeholder="对手用户名 2">
+     <input id="u2" autocomplete="off" maxlength="64" aria-label="对手用户名 3" placeholder="对手用户名 3">
+     <input id="u3" autocomplete="off" maxlength="64" aria-label="对手用户名 4" placeholder="对手用户名 4">
+     <input id="u4" autocomplete="off" maxlength="64" aria-label="对手用户名 5" placeholder="对手用户名 5">
+     </div>
+    </div>
+    <div class="form-section">
+     <label for="key">访问密钥</label>
+     <input id="key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="输入服务器密钥">
+     <div class="analysis-mode-toggle" role="group" aria-label="分析模式">
+      <button id="mode-normal" type="button" data-analysis-mode="normal" class="active" aria-label="普通模式，原有稳定流水线" aria-pressed="true" title="原有稳定流水线">普通</button>
+      <button id="mode-fast" type="button" data-analysis-mode="fast" aria-label="快速模式，并行下载与解析" aria-pressed="false" title="并行下载与解析">快速</button>
+     </div>
+     <button id="run" type="button">开始扫描</button>
+   </div>
+   <div id="status" role="status" aria-live="polite"></div>
+   <div id="failed" aria-live="polite"></div>
+   </aside>
+   <main class="content-area" aria-label="对手回放分析">
+    <div class="content-shell">
+     <section class="map-view glass-panel" aria-label="回放工作区">
+     <div id="empty-state" class="empty-state">
+      <div class="empty-state-inner">
+       <div class="map-placeholder" aria-hidden="true"><span class="map-placeholder-ring"></span></div>
+       <strong>等待扫描数据</strong>
+       <p>完成左侧设置并开始扫描后，这里会显示合并手枪局和每位玩家的 Buy 回放。</p>
+      </div>
+     </div>
+     <div id="view-toolbar" class="view-toolbar" hidden>
+      <nav id="view-switcher" class="view-switcher" role="group" aria-label="回放视图选择" hidden></nav>
+      <div class="view-side-controls">
+       <span class="control-caption">阵营</span>
+       <div class="side-toggle" role="group" aria-label="阵营筛选">
+        <button id="side-ct" type="button" class="active" aria-pressed="true">CT</button>
+        <button id="side-t" type="button" aria-pressed="false">T</button>
+       </div>
+      </div>
+     </div>
+     <section id="pistol" class="card" aria-label="合并手枪局" hidden>
+      <div id="pistol-legend" class="legend pistol-legend" aria-label="玩家颜色图例"></div>
+      <canvas id="pistol-canvas" class="replay-canvas" aria-label="合并手枪局回放"></canvas>
+     </section>
+     <div id="cards"></div>
+    </section>
+   </div>
+  </main>
  </div>
- <div class="main"><div id="cards"></div></div>
-</div>
-<script src="/static/replay.js"></script>
-<script src="/static/app.js"></script>
-</body></html>
+ <script src="/static/replay.js"></script>
+ <script src="/static/app.js"></script>
+</body>
+</html>

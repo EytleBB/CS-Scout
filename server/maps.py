@@ -21,4 +21,5 @@ def available_maps():
     if not os.path.isdir(config.MAPS_DIR):
         return []
     return sorted(n for n in os.listdir(config.MAPS_DIR)
-                  if os.path.exists(os.path.join(config.MAPS_DIR, n, "meta.json")))
+                  if os.path.isfile(os.path.join(config.MAPS_DIR, n, "meta.json"))
+                  and os.path.isfile(os.path.join(config.MAPS_DIR, n, "radar.png")))

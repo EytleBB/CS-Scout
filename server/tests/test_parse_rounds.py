@@ -36,5 +36,5 @@ def test_classify_both_sides_and_pistol(parser_and_evts):
     sides = {c["side"] for c in classified if c["side"]}
     assert sides == {"CT", "T"}                      # player appears on both sides
     rtypes = {c["rtype"] for c in classified if c["rtype"]}
-    assert rtypes <= {"Pistol", "Full", "Eco"}
+    assert rtypes <= {"Pistol", "Buy"}
     assert "Pistol" in rtypes                          # at least the opening pistol

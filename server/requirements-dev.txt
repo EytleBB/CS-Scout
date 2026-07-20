@@ -1,0 +1,2 @@
+-r requirements-runtime.txt
+pytest==9.1.1
