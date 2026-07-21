@@ -283,9 +283,12 @@ global.fetch = async (url, options) => {{
       requests[1][0] !== "/api/status") {{
     throw new Error(`409 recovery did not resume polling: ${{JSON.stringify(requests)}}`);
   }}
-  if (requests.some(([, options]) =>
-      !options || options.headers.Authorization !== "Bearer test-key")) {{
-    throw new Error(`protected request missed Bearer key: ${{JSON.stringify(requests)}}`);
+  if (!requests[0][1] || requests[0][1].headers.Authorization !== "Bearer test-key") {{
+    throw new Error(`analysis request missed Bearer key: ${{JSON.stringify(requests)}}`);
+  }}
+  if (requests[1][1] && requests[1][1].headers &&
+      requests[1][1].headers.Authorization) {{
+    throw new Error(`public status request carried a key: ${{JSON.stringify(requests)}}`);
   }}
   const analyzeBody = JSON.parse(requests[0][1].body);
   if (Object.prototype.hasOwnProperty.call(analyzeBody, "key")) {{
@@ -315,7 +318,7 @@ global.fetch = async (url, options) => {{
     assert result.returncode == 0, result.stderr or result.stdout
 
 
-def test_frontend_does_not_request_sensitive_routes_without_key():
+def test_frontend_does_not_start_analysis_without_key():
     script = f"""
 const {{ runAnalysis }} = require({json.dumps(os.path.abspath(APP_JS))});
 
@@ -362,7 +365,7 @@ global.fetch = async () => {{ fetchCount += 1; throw new Error("fetch must not r
     assert result.returncode == 0, result.stderr or result.stdout
 
 
-def test_entered_key_connects_to_existing_analysis_with_bearer_auth():
+def test_entered_key_refreshes_public_analysis_without_sending_key():
     script = f"""
 const {{ connectWithEnteredKey }} = require({json.dumps(os.path.abspath(APP_JS))});
 
@@ -396,8 +399,9 @@ global.fetch = async (url, options) => {{
   if (requests.length !== 1 || requests[0][0] !== "/api/status") {{
     throw new Error(`key entry did not read status: ${{JSON.stringify(requests)}}`);
   }}
-  if (requests[0][1].headers.Authorization !== "Bearer shared-secret") {{
-    throw new Error("status request did not carry the entered key");
+  if (requests[0][1] && requests[0][1].headers &&
+      requests[0][1].headers.Authorization) {{
+    throw new Error("public status request unexpectedly carried the entered key");
   }}
   if (elements["#status"].textContent !== "idle") {{
     throw new Error(`existing status was not shown: ${{elements["#status"].textContent}}`);

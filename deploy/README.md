@@ -1,8 +1,8 @@
 # CS-Scout production deployment
 
 This guide targets Ubuntu 24.04 on a 4-vCPU, 4-GB RAM, 60-GB disk VPS. It
-assumes a small group of trusted users, public HTTPS, and the application's
-Bearer access key.
+assumes public HTTPS and a Bearer key that authorizes starting new analysis
+jobs. Status, progress, and generated replay results are intentionally public.
 
 The production request path is:
 
@@ -167,30 +167,26 @@ sudo ufw deny 5000/tcp
 sudo ufw enable
 ```
 
-Final smoke checks. Read the application key without placing it in shell
-history, then verify readiness and one protected endpoint:
+Final smoke checks. Readiness and current analysis status are public:
 
 ```bash
-read -rsp 'CS-Scout access key: ' CS_SCOUT_ACCESS_KEY; echo
 curl --fail --silent https://scout.example.com/readyz
-curl --fail --silent \
-  -H "Authorization: Bearer ${CS_SCOUT_ACCESS_KEY}" \
-  https://scout.example.com/api/status
-unset CS_SCOUT_ACCESS_KEY
+curl --fail --silent https://scout.example.com/api/status
 sudo journalctl -u cs-scout.service -n 100 --no-pager
 ```
 
 `/healthz` is a liveness probe. `/readyz` additionally checks the configured
 secret, map availability, and write access to the Demo/output directories.
 Both probes deliberately return only generic status and may be monitored
-without the application key.
+without the application key. The key is required only by `POST /api/analyze`;
+the UI keeps it in page memory and sends it when starting a new job.
 
 ## 6. Upgrade without mixing versions
 
 Never update files in place. A fast analysis starts new Python processes over
 time, so changing source files during a scan can mix two code versions.
 
-1. Authenticate to `/api/status` and confirm `status` is not `running`.
+1. Read public `/api/status` and confirm `status` is not `running`.
 2. Clone the new tag into a new `/opt/cs-scout/releases/<tag>` directory.
 3. Create its own `.venv` and install `requirements-runtime.txt`.
 4. Run `pip check`, the automated tests in CI/staging, and

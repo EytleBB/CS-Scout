@@ -40,9 +40,7 @@ def isolated_web_state():
 
 def test_status_shape():
     c = web_server.app.test_client()
-    r = c.get("/api/status", headers={
-        "Authorization": f"Bearer {web_server.config.SECRET_KEY}"
-    })
+    r = c.get("/api/status")
     assert r.status_code == 200
     assert "status" in r.get_json()
     assert r.headers["Cache-Control"] == "no-store"
@@ -62,39 +60,49 @@ def test_public_routes_do_not_require_access_key(monkeypatch, tmp_path):
     assert ready.get_json()["status"] == "ready"
 
 
-@pytest.mark.parametrize("path", [
-    "/api/status", "/api/results", "/api/player/safe-domain",
-    "/output/player_safe-domain.json",
-])
-def test_sensitive_get_routes_require_bearer_key(path):
-    c = web_server.app.test_client()
-
-    missing = c.get(path)
-    assert missing.status_code == 401
-    assert missing.headers["WWW-Authenticate"] == 'Bearer realm="CS-Scout"'
-    assert missing.headers["Cache-Control"] == "no-store"
-    assert missing.headers["Pragma"] == "no-cache"
-
-    invalid = c.get(path, headers={"Authorization": "Bearer wrong"})
-    assert invalid.status_code == 403
-    assert invalid.headers["Cache-Control"] == "no-store"
-
-
-def test_sensitive_routes_accept_valid_bearer_and_do_not_cache(monkeypatch, tmp_path):
+def test_result_routes_are_public_and_do_not_cache(monkeypatch, tmp_path):
     output_dir = tmp_path / "output"
     output_dir.mkdir()
     player_payload = {"username": "Alpha", "rounds": []}
     player_path = output_dir / "player_safe-domain.json"
     player_path.write_text(json.dumps(player_payload), encoding="utf-8")
+    (output_dir / "analysis_summary.json").write_text(json.dumps({
+        "results": [{"username": "Alpha", "domain": "safe-domain"}],
+        "failed": [], "map": "de_mirage", "max_demos": 2, "mode": "normal",
+    }), encoding="utf-8")
     monkeypatch.setattr(web_server.config, "OUTPUT_DIR", str(output_dir))
-    headers = {"Authorization": f"Bearer {web_server.config.SECRET_KEY}"}
     c = web_server.app.test_client()
 
     for path in ("/api/status", "/api/results", "/api/player/safe-domain",
                  "/output/player_safe-domain.json"):
-        response = c.get(path, headers=headers)
+        response = c.get(path)
         assert response.status_code == 200
         assert response.headers["Cache-Control"] == "no-store"
+        assert response.headers["Pragma"] == "no-cache"
+
+
+def test_status_restores_latest_saved_results_after_restart(
+    monkeypatch, tmp_path, isolated_web_state
+):
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    saved_result = {"username": "Alpha", "domain": "safe-domain"}
+    (output_dir / "analysis_summary.json").write_text(json.dumps({
+        "results": [saved_result], "failed": [], "map": "de_mirage",
+        "max_demos": 4, "mode": "fast",
+    }), encoding="utf-8")
+    monkeypatch.setattr(web_server.config, "OUTPUT_DIR", str(output_dir))
+
+    response = web_server.app.test_client().get("/api/status")
+    body = response.get_json()
+
+    assert response.status_code == 200
+    assert body["status"] == "done"
+    assert body["message"] == "已加载最近一次分析结果"
+    assert body["results"] == [saved_result]
+    assert body["map"] == "de_mirage"
+    assert body["max_demos"] == 4
+    assert body["mode"] == "fast"
 
 
 def test_authorization_header_takes_precedence_over_legacy_body_key(monkeypatch):
@@ -231,8 +239,10 @@ def test_frontend_registers_button_switched_replay_views():
     assert 'const activeView = replayViews.get(activeViewKey)' in source
     assert 'clock = { elapsed: 0, playing: true, speed: 2' in source
     assert 'requestProtectedJSON("/api/analyze"' in source
-    assert 'requestProtectedJSON("/api/status")' in source
-    assert 'requestProtectedJSON(`/api/player/${encodeURIComponent(domain)}`' in source
+    assert 'requestJSON("/api/status")' in source
+    assert 'requestJSON(`/api/player/${encodeURIComponent(domain)}`' in source
+    assert 'else if (publicMonitoringEnabled) schedulePoll(epoch, 5000)' in source
+    assert 'void poll(pollEpoch)' in source
 
 
 def test_analyze_mode_defaults_to_normal_and_accepts_fast(monkeypatch):
