@@ -19,19 +19,21 @@ function New-RandomSecret {
 function Protect-SecretFile([string]$Path) {
     try {
         $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-        $acl = New-Object System.Security.AccessControl.FileSecurity
-        $acl.SetOwner($identity)
+        $acl = Get-Acl -LiteralPath $Path
         $acl.SetAccessRuleProtection($true, $false)
+        foreach ($existingRule in @($acl.Access)) {
+            [void]$acl.RemoveAccessRuleAll($existingRule)
+        }
         $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
             $identity,
             [System.Security.AccessControl.FileSystemRights]::FullControl,
             [System.Security.AccessControl.AccessControlType]::Allow
         )
-        [void]$acl.AddAccessRule($rule)
+        [void]$acl.SetAccessRule($rule)
         Set-Acl -LiteralPath $Path -AclObject $acl
     }
     catch {
-        Write-Warning "Could not tighten the key file ACL. The key is still stored inside your LocalAppData profile."
+        Write-Warning "Could not tighten the key file ACL. This does not prevent local use; keep the key private."
     }
 }
 
@@ -107,20 +109,55 @@ function Get-PythonInfo([string]$Command) {
     }
 }
 
-function Test-LocalPortOpen([int]$Port) {
-    $client = New-Object System.Net.Sockets.TcpClient
+function Read-ValidatedStartupInfo(
+    [string]$Path,
+    [string]$ExpectedToken,
+    [int]$ExpectedProcessId
+) {
+    $raw = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        throw "The local server returned empty startup information."
+    }
     try {
-        $task = $client.ConnectAsync("127.0.0.1", $Port)
-        if (-not $task.Wait(400)) {
-            return $false
-        }
-        return $client.Connected
+        $document = $raw | ConvertFrom-Json
     }
     catch {
-        return $false
+        throw "The local server returned invalid startup information."
     }
-    finally {
-        $client.Dispose()
+    foreach ($name in @("token", "pid", "parent_pid", "port")) {
+        if ($null -eq $document.PSObject.Properties[$name]) {
+            throw "The local server startup information is missing $name."
+        }
+    }
+    if (([string]$document.token) -cne $ExpectedToken) {
+        throw "The local server startup token did not match."
+    }
+
+    $reportedProcessId = 0
+    $reportedParentProcessId = 0
+    $hasValidProcessId = [int]::TryParse(
+        [string]$document.pid,
+        [ref]$reportedProcessId
+    ) -and $reportedProcessId -gt 0
+    $hasValidParentProcessId = [int]::TryParse(
+        [string]$document.parent_pid,
+        [ref]$reportedParentProcessId
+    ) -and $reportedParentProcessId -gt 0
+    $isExpectedProcess = $reportedProcessId -eq $ExpectedProcessId -or
+        $reportedParentProcessId -eq $ExpectedProcessId
+    if (-not $hasValidProcessId -or
+        -not $hasValidParentProcessId -or
+        -not $isExpectedProcess) {
+        throw "The local server startup process ID did not match."
+    }
+    $reportedPort = 0
+    if (-not [int]::TryParse([string]$document.port, [ref]$reportedPort) -or
+        $reportedPort -lt 1 -or $reportedPort -gt 65535) {
+        throw "The local server reported an invalid TCP port."
+    }
+    return [pscustomobject]@{
+        Port = $reportedPort
+        ProcessId = $reportedProcessId
     }
 }
 
@@ -191,8 +228,12 @@ function Assert-MapAssets([string]$MapsRoot) {
 }
 
 $serverProcess = $null
+$serverRuntimeProcess = $null
 $instanceMutex = $null
 $mutexAcquired = $false
+$startupInfoPath = $null
+$startupToken = $null
+$baseUri = $null
 try {
     $windowsIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [System.Security.Principal.WindowsPrincipal]::new($windowsIdentity)
@@ -250,20 +291,25 @@ try {
         throw "Only $freeGB GB is free on the local data drive. Free at least 9 GB before starting CS-Scout."
     }
     if ($freeGB -lt 16) {
-        Write-Warning "Only $freeGB GB is free. A larger Demo analysis may run out of disk space."
+        Write-Warning "Only $freeGB GB is free. Start with Normal mode and 1-2 Demos, or free more disk space before a larger analysis."
     }
     $secret = Get-OrCreateSecret $secretPath
-
-    if (Test-LocalPortOpen 5000) {
-        throw "Port 5000 is already in use. Close the other CS-Scout window or the program using that port, then try again."
+    $startupInfoPath = Join-Path $localState (
+        "startup-" + [System.Guid]::NewGuid().ToString("N") + ".json"
+    )
+    $startupToken = New-RandomSecret
+    if (Test-Path -LiteralPath $startupInfoPath) {
+        throw "Refusing to reuse an existing local startup-information file."
     }
 
     Write-Host "CS-Scout is starting on this computer only..." -ForegroundColor Cyan
-    Write-Host "Address: http://127.0.0.1:5000"
     Write-Host "Data: $localState"
 
     $childEnvironment = [ordered]@{
         "CS_SCOUT_HOST" = "127.0.0.1"
+        "CS_SCOUT_PORT" = "0"
+        "CS_SCOUT_STARTUP_INFO" = $startupInfoPath
+        "CS_SCOUT_STARTUP_TOKEN" = $startupToken
         "CS_SCOUT_SECRET_KEY" = $secret
         "CS_SCOUT_DEMO_DIR" = $demoDir
         "CS_SCOUT_OUTPUT_DIR" = $outputDir
@@ -308,15 +354,43 @@ try {
     }
 
     $ready = $false
+    $startupReceived = $false
     $deadline = [System.DateTime]::UtcNow.AddSeconds(30)
     while ([System.DateTime]::UtcNow -lt $deadline) {
+        if ($serverProcess.HasExited) {
+            break
+        }
+
+        if (-not $startupReceived) {
+            if (-not (Test-Path -LiteralPath $startupInfoPath -PathType Leaf)) {
+                Start-Sleep -Milliseconds 100
+                continue
+            }
+            $startupInfo = Read-ValidatedStartupInfo `
+                -Path $startupInfoPath `
+                -ExpectedToken $startupToken `
+                -ExpectedProcessId $serverProcess.Id
+            $baseUri = "http://127.0.0.1:$($startupInfo.Port)"
+            try {
+                $serverRuntimeProcess = Get-Process `
+                    -Id $startupInfo.ProcessId `
+                    -ErrorAction Stop
+            }
+            catch {
+                throw "The reported local server process is not running."
+            }
+            $startupReceived = $true
+            Write-Host "Address: $baseUri"
+            Remove-Item -LiteralPath $startupInfoPath -Force -ErrorAction SilentlyContinue
+        }
+
         if ($serverProcess.HasExited) {
             break
         }
         try {
             $readyDocument = Invoke-RestMethod `
                 -UseBasicParsing `
-                -Uri "http://127.0.0.1:5000/readyz" `
+                -Uri "$baseUri/readyz" `
                 -TimeoutSec 1
             if ($serverProcess.HasExited) {
                 break
@@ -324,7 +398,7 @@ try {
             if ($null -ne $readyDocument -and $readyDocument.status -eq "ready") {
                 $authResponse = Invoke-WebRequest `
                     -UseBasicParsing `
-                    -Uri "http://127.0.0.1:5000/api/status" `
+                    -Uri "$baseUri/api/status" `
                     -Headers @{ Authorization = "Bearer $secret" } `
                     -TimeoutSec 1
                 if ($serverProcess.HasExited) {
@@ -346,20 +420,26 @@ try {
 
     if (-not $ready) {
         if ($serverProcess.HasExited) {
+            $serverProcess.WaitForExit()
             throw "CS-Scout exited during startup (exit code $($serverProcess.ExitCode))."
+        }
+        if (-not $startupReceived) {
+            throw "CS-Scout did not report its local address within 30 seconds."
         }
         throw "CS-Scout did not pass readiness and access-key checks within 30 seconds."
     }
+    Start-Sleep -Milliseconds 100
+    $serverProcess.Refresh()
     if ($serverProcess.HasExited) {
         throw "CS-Scout exited immediately after its startup checks."
     }
 
     Copy-SecretToClipboard $secret
     try {
-        Start-Process "http://127.0.0.1:5000/"
+        Start-Process "$baseUri/"
     }
     catch {
-        Write-Warning "Could not open the browser automatically. Open http://127.0.0.1:5000 manually."
+        Write-Warning "Could not open the browser automatically. Open $baseUri manually."
     }
 
     Write-Host "`nCS-Scout is running." -ForegroundColor Green
@@ -380,11 +460,28 @@ finally {
     if ($null -ne $serverProcess -and -not $serverProcess.HasExited) {
         Write-Host "Stopping the local CS-Scout process..."
         if (Get-Command taskkill.exe -ErrorAction SilentlyContinue) {
-            & taskkill.exe /PID $serverProcess.Id /T /F 2>$null | Out-Null
+            $savedErrorActionPreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = "SilentlyContinue"
+                & taskkill.exe /PID $serverProcess.Id /T /F 2>$null | Out-Null
+            }
+            finally {
+                $ErrorActionPreference = $savedErrorActionPreference
+            }
         }
-        if (-not $serverProcess.HasExited) {
-            Stop-Process -Id $serverProcess.Id -Force -ErrorAction SilentlyContinue
-        }
+    }
+    if ($null -ne $serverRuntimeProcess -and -not $serverRuntimeProcess.HasExited) {
+        Stop-Process `
+            -InputObject $serverRuntimeProcess `
+            -Force `
+            -ErrorAction SilentlyContinue
+    }
+    if ($null -ne $serverProcess -and -not $serverProcess.HasExited) {
+        Stop-Process -Id $serverProcess.Id -Force -ErrorAction SilentlyContinue
+    }
+    if ($null -ne $startupInfoPath -and
+        (Test-Path -LiteralPath $startupInfoPath -PathType Leaf)) {
+        Remove-Item -LiteralPath $startupInfoPath -Force -ErrorAction SilentlyContinue
     }
     if ($mutexAcquired -and $null -ne $instanceMutex) {
         try {

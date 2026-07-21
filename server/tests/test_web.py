@@ -171,6 +171,15 @@ def test_analyze_bad_key():
     assert r.status_code == 403
 
 
+def test_analyze_requires_access_key():
+    c = web_server.app.test_client()
+    response = c.post("/api/analyze", json={
+        "usernames": ["x"], "map": "de_mirage",
+    })
+    assert response.status_code == 401
+    assert response.headers["WWW-Authenticate"] == 'Bearer realm="CS-Scout"'
+
+
 def test_index_contains_unified_replay_layout():
     c = web_server.app.test_client()
     r = c.get("/")
@@ -221,6 +230,9 @@ def test_frontend_registers_button_switched_replay_views():
     assert 'button.setAttribute("aria-pressed", String(active))' in source
     assert 'const activeView = replayViews.get(activeViewKey)' in source
     assert 'clock = { elapsed: 0, playing: true, speed: 2' in source
+    assert 'requestProtectedJSON("/api/analyze"' in source
+    assert 'requestProtectedJSON("/api/status")' in source
+    assert 'requestProtectedJSON(`/api/player/${encodeURIComponent(domain)}`' in source
 
 
 def test_analyze_mode_defaults_to_normal_and_accepts_fast(monkeypatch):

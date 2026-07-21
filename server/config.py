@@ -14,6 +14,20 @@ def _absolute_path_env(name, default):
     return os.path.abspath(os.path.expanduser(value or default))
 
 
+def _port_env(name, default):
+    """Return a TCP port, allowing zero to request an OS-assigned port."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return int(default)
+    try:
+        value = int(raw.strip())
+    except (TypeError, ValueError, OverflowError):
+        return int(default)
+    if not 0 <= value <= 65535:
+        return int(default)
+    return value
+
+
 DEMO_DIR = _absolute_path_env(
     "CS_SCOUT_DEMO_DIR", os.path.join(BASE_DIR, "demos_opponents")
 )
@@ -36,7 +50,7 @@ EQ_BUY_MIN = 2000      # personal equip floor for keeping a non-pistol Buy round
 # Server. Bind locally and disable analysis until a secret is explicitly set;
 # deployments can opt into public listening after configuring authentication.
 HOST = os.getenv("CS_SCOUT_HOST", "127.0.0.1")
-PORT = 5000
+PORT = _port_env("CS_SCOUT_PORT", 5000)
 SECRET_KEY = os.getenv("CS_SCOUT_SECRET_KEY", "").strip()
 
 

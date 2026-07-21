@@ -7,19 +7,21 @@ $ErrorActionPreference = "Stop"
 function Protect-SecretFile([string]$Path) {
     try {
         $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-        $acl = New-Object System.Security.AccessControl.FileSecurity
-        $acl.SetOwner($identity)
+        $acl = Get-Acl -LiteralPath $Path
         $acl.SetAccessRuleProtection($true, $false)
+        foreach ($existingRule in @($acl.Access)) {
+            [void]$acl.RemoveAccessRuleAll($existingRule)
+        }
         $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
             $identity,
             [System.Security.AccessControl.FileSystemRights]::FullControl,
             [System.Security.AccessControl.AccessControlType]::Allow
         )
-        [void]$acl.AddAccessRule($rule)
+        [void]$acl.SetAccessRule($rule)
         Set-Acl -LiteralPath $Path -AclObject $acl
     }
     catch {
-        Write-Warning "Could not tighten the local access key ACL."
+        Write-Warning "Could not tighten the local access key ACL. This does not prevent local use; keep the key private."
     }
 }
 

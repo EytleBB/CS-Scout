@@ -155,6 +155,9 @@ foreach ($map in $maps) {
 
 $installScript = Get-Content -LiteralPath (Join-Path $windowsRoot "Install-CS-Scout.ps1") -Raw
 $startScript = Get-Content -LiteralPath (Join-Path $windowsRoot "Start-CS-Scout.ps1") -Raw
+$copyScript = Get-Content -LiteralPath (Join-Path $windowsRoot "Copy-Access-Key.ps1") -Raw
+$configScript = Get-Content -LiteralPath (Join-Path $root "server\config.py") -Raw
+$webServerScript = Get-Content -LiteralPath (Join-Path $root "server\web_server.py") -Raw
 
 foreach ($fileName in $runtimePython) {
     Assert-True ($installScript -match [regex]::Escape($fileName)) "Installer does not validate runtime Python file: $fileName"
@@ -222,14 +225,37 @@ foreach ($entry in @(
 # Secret ACLs are restored after every read.
 Assert-True ($installScript -match '(?s)function Read-ValidatedSecret.*?Protect-SecretFile \$Path') "Installer must re-protect an existing key."
 Assert-True ($startScript -match '(?s)function Get-OrCreateSecret.*?Protect-SecretFile \$Path') "Starter must re-protect an existing key."
+foreach ($entry in @(
+    [pscustomobject]@{ Name = "installer"; Text = $installScript },
+    [pscustomobject]@{ Name = "starter"; Text = $startScript },
+    [pscustomobject]@{ Name = "key copier"; Text = $copyScript }
+)) {
+    Assert-True ($entry.Text -match 'Get-Acl -LiteralPath \$Path') "$($entry.Name) must preserve the existing ACL owner."
+    Assert-True ($entry.Text -notmatch '\.SetOwner\(') "$($entry.Name) must not require owner-changing privileges."
+    Assert-True ($entry.Text -match 'RemoveAccessRuleAll') "$($entry.Name) must remove old explicit key access rules."
+    Assert-True ($entry.Text -match 'SetAccessRule\(\$rule\)') "$($entry.Name) must grant the current user access."
+}
 
-# Single-instance and port controls.
+# Single-instance and kernel-assigned local port controls.
 Assert-True ($startScript -match 'System\.Threading\.Mutex') "Starter must use a named mutex."
 Assert-True ($startScript -match 'Local\\CS-Scout-') "Mutex must be local to the current Windows session and user SID."
 Assert-True ($startScript -match '\.WaitOne\(0, \$false\)') "Mutex acquisition must be non-blocking."
 Assert-True ($startScript -match '\.ReleaseMutex\(\)') "Starter must release its mutex."
 Assert-True ($startScript -match '\.Dispose\(\)') "Starter must dispose its mutex."
-Assert-True ($startScript -match 'Test-LocalPortOpen 5000') "Starter must retain the TCP port conflict check."
+Assert-True ($startScript -notmatch 'Test-LocalPortOpen') "Starter must not race another process with a probe-then-bind port check."
+Assert-True ($startScript -match '"CS_SCOUT_PORT" = "0"') "Starter must ask Windows to atomically assign a free port."
+Assert-True ($startScript -match '"CS_SCOUT_STARTUP_INFO" = \$startupInfoPath') "Starter must request authenticated startup information."
+Assert-True ($startScript -match '"CS_SCOUT_STARTUP_TOKEN" = \$startupToken') "Starter must pass a one-time startup token."
+Assert-True ($startScript -match 'Read-ValidatedStartupInfo') "Starter must validate the server's selected port."
+Assert-True ($startScript -match '\[string\]\$document\.token.*?-cne \$ExpectedToken') "Starter must compare the startup token case-sensitively."
+Assert-True ($startScript -match '\$reportedProcessId -eq \$ExpectedProcessId -or') "Starter must accept a direct Python child PID."
+Assert-True ($startScript -match '\$reportedParentProcessId -eq \$ExpectedProcessId') "Starter must accept a Python runtime whose launcher is its parent."
+Assert-True ($startScript -match 'foreach \(\$name in @\("token", "pid", "parent_pid", "port"\)\)') "Starter must require all authenticated startup fields."
+Assert-True ($startScript -match 'ProcessId = \$reportedProcessId') "Starter must retain the actual Python runtime PID for cleanup."
+Assert-True ($startScript -match '\$reportedPort -lt 1 -or \$reportedPort -gt 65535') "Starter must reject an invalid reported port."
+Assert-True ($startScript -match '\$baseUri = "http://127\.0\.0\.1:\$\(\$startupInfo\.Port\)"') "Starter must derive one loopback base URI from the reported port."
+Assert-True ($startScript -notmatch 'http://127\.0\.0\.1:5000') "Starter must not retain a fixed local URL."
+Assert-True ($startScript -match 'Remove-Item -LiteralPath \$startupInfoPath') "Starter must remove its one-time startup file."
 
 # Child-only environment injection and restoration before browser launch.
 Assert-True ($startScript -match '"CS_SCOUT_HOST" = "127\.0\.0\.1"') "Starter must force loopback binding."
@@ -239,8 +265,20 @@ Assert-True ($startScript -match '\$savedEnvironment') "Starter must save the or
 Assert-True ($startScript -match 'EnvironmentVariableTarget\]::Process') "Environment changes must be process-local."
 Assert-True ($startScript -match '(?s)try\s*\{.*?Start-Process.*?-FilePath \$venvPython.*?\}\s*finally\s*\{.*?\$savedEnvironment\[\$name\]') "Starter must restore the environment immediately after spawning Python."
 $restoreIndex = $startScript.IndexOf('$savedEnvironment[$name],')
-$browserIndex = $startScript.IndexOf('Start-Process "http://127.0.0.1:5000/"')
+$browserIndex = $startScript.IndexOf('Start-Process "$baseUri/"')
 Assert-True ($restoreIndex -ge 0 -and $browserIndex -gt $restoreIndex) "Browser must launch only after environment restoration."
+Assert-True ($startScript -match '-Uri "\$baseUri/readyz"') "Readiness must use the reported base URI."
+Assert-True ($startScript -match '-Uri "\$baseUri/api/status"') "Authenticated status must use the reported base URI."
+
+# The Python entry point must bind port zero atomically and publish the actual port.
+Assert-True ($configScript -match 'CS_SCOUT_PORT') "Server config must accept the starter's port override."
+Assert-True ($webServerScript -match 'make_server') "Local entry point must use a server object that exposes the bound port."
+Assert-True ($webServerScript -match '\.server_port') "Local entry point must report the kernel-assigned port."
+Assert-True ($webServerScript -match 'CS_SCOUT_STARTUP_INFO') "Local entry point must support the startup-information file."
+Assert-True ($webServerScript -match 'CS_SCOUT_STARTUP_TOKEN') "Local entry point must echo the one-time startup token."
+Assert-True ($webServerScript -match 'os\.getppid\(\)') "Local entry point must report the Python launcher's parent PID."
+Assert-True ($webServerScript -match 'os\.replace') "Startup information must be published atomically."
+Assert-True ($webServerScript -match '\.serve_forever\(\)') "Local entry point must serve after publishing its port."
 
 # Real deadline, JSON readiness, authenticated status, and process-liveness checks.
 Assert-True ($startScript -match 'UtcNow\.AddSeconds\(30\)') "Starter must use a real 30-second deadline."
@@ -253,5 +291,6 @@ Assert-True (($startScript | Select-String -Pattern '\$serverProcess\.HasExited'
 
 # Exit must remove only the process tree created by this starter.
 Assert-True ($startScript -match '/PID \$serverProcess\.Id /T /F') "Starter must clean up its own parser process tree."
+Assert-True ($startScript -match '(?s)Stop-Process\s+`\s*-InputObject \$serverRuntimeProcess') "Starter must directly stop the original runtime process object when taskkill is restricted."
 
 Write-Host "Windows player package validation passed." -ForegroundColor Green

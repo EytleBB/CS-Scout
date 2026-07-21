@@ -236,6 +236,11 @@ Access at `http://<VPS公网IP>:5000` — ensure port 5000 is open. Install `fon
 
 ### Windows Local Startup
 
+The packaged `windows\Start-CS-Scout.cmd` requests port `0`, so Windows atomically selects a free
+loopback port. `web_server.py` reports that port through a token- and PID-bound atomic startup JSON;
+the launcher derives one base URL for readiness, authenticated status, and browser launch. This avoids
+conflicts with remote-desktop agents that already listen on port 5000.
+
 From the repository root:
 
 ```powershell
