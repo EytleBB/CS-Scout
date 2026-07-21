@@ -24,6 +24,7 @@ import hmac
 import tempfile
 
 from flask import Flask, abort, render_template, request, jsonify, send_from_directory
+from werkzeug.serving import make_server
 
 import pipeline
 import config
@@ -353,14 +354,90 @@ def _run_analysis(usernames, map_name, max_demos=10, mode="normal"):
             state["failed"] = failed
     except Exception:
         # Keep filesystem paths, upstream URLs and parser details in server
-        # logs.  /api/status is visible to every holder of the shared key.
+        # logs. /api/status is visible to every holder of the shared key.
         log.exception("Analysis failed")
         with state_lock:
             state["status"] = "error"
             state["message"] = "分析失败，请查看服务器日志"
 
 
-if __name__ == "__main__":
+def _write_startup_info(path, token, port):
+    """Atomically publish the process and actual bound port to the launcher."""
+    if not path:
+        return
+    if not token:
+        raise RuntimeError(
+            "CS_SCOUT_STARTUP_TOKEN is required when CS_SCOUT_STARTUP_INFO is set"
+        )
+
+    actual_port = int(port)
+    if not 1 <= actual_port <= 65535:
+        raise ValueError(f"Invalid bound server port: {actual_port}")
+
+    target = os.path.abspath(os.path.expanduser(path))
+    parent = os.path.dirname(target)
+    os.makedirs(parent, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=".cs-scout-startup-", suffix=".tmp", dir=parent
+    )
+    stream = None
+    try:
+        stream = os.fdopen(descriptor, "w", encoding="ascii", newline="\n")
+        descriptor = None
+        with stream:
+            json.dump(
+                {
+                    "pid": os.getpid(),
+                    "parent_pid": os.getppid(),
+                    "port": actual_port,
+                    "token": token,
+                },
+                stream,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        stream = None
+        os.replace(temporary, target)
+    finally:
+        if stream is not None:
+            stream.close()
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def _run_development_server():
+    """Run the local server and optionally report an OS-assigned port."""
     os.makedirs(config.OUTPUT_DIR, exist_ok=True)
-    print(f"CSAI Server: http://{config.HOST}:{config.PORT}")
-    app.run(host=config.HOST, port=config.PORT, debug=False)
+    server = None
+    try:
+        server = make_server(
+            config.HOST,
+            config.PORT,
+            app,
+            threaded=True,
+        )
+        actual_port = int(server.server_port)
+        startup_info_path = os.getenv("CS_SCOUT_STARTUP_INFO", "").strip()
+        startup_token = os.getenv("CS_SCOUT_STARTUP_TOKEN", "").strip()
+        _write_startup_info(startup_info_path, startup_token, actual_port)
+
+        print(f"CSAI Server: http://{config.HOST}:{actual_port}", flush=True)
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+    finally:
+        if server is not None:
+            server.server_close()
+
+
+if __name__ == "__main__":
+    _run_development_server()
