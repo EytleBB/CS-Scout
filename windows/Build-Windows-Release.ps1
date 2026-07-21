@@ -337,7 +337,7 @@ function Assert-StagedRuntimeIntegrity([string]$PackageRoot, [string]$ArchiveNam
     }
 
     $powerShellFiles = @(Get-ChildItem -LiteralPath (Join-Path $PackageRoot "windows") -Filter "*.ps1" -File)
-    Assert-True ($powerShellFiles.Count -eq 4) "The staged Windows workflow must contain exactly four player-facing PowerShell scripts."
+    Assert-True ($powerShellFiles.Count -eq 3) "The staged Windows workflow must contain exactly three player-facing PowerShell scripts."
     foreach ($scriptFile in $powerShellFiles) {
         $tokens = $null
         $parseErrors = $null
