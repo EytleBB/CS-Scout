@@ -263,66 +263,6 @@ function Remove-SafeVenv([string]$Root, [string]$Path) {
     Remove-Item -LiteralPath $actual -Recurse -Force
 }
 
-function New-RandomSecret {
-    $bytes = New-Object byte[] 32
-    $generator = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-    try {
-        $generator.GetBytes($bytes)
-    }
-    finally {
-        $generator.Dispose()
-    }
-    return ([System.BitConverter]::ToString($bytes)).Replace("-", "").ToLowerInvariant()
-}
-
-function Protect-SecretFile([string]$Path) {
-    try {
-        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-        $acl = Get-Acl -LiteralPath $Path
-        $acl.SetAccessRuleProtection($true, $false)
-        foreach ($existingRule in @($acl.Access)) {
-            [void]$acl.RemoveAccessRuleAll($existingRule)
-        }
-        $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
-            $identity,
-            [System.Security.AccessControl.FileSystemRights]::FullControl,
-            [System.Security.AccessControl.AccessControlType]::Allow
-        )
-        [void]$acl.SetAccessRule($rule)
-        Set-Acl -LiteralPath $Path -AclObject $acl
-    }
-    catch {
-        Write-Warning "Could not tighten the key file ACL. This does not prevent local use; keep the key private."
-    }
-}
-
-function Read-ValidatedSecret([string]$Path) {
-    $raw = Get-Content -LiteralPath $Path -Raw
-    if ($null -eq $raw) {
-        throw "The local access key file is empty: $Path"
-    }
-    $value = ([string]$raw).Trim()
-    if ($value -notmatch "^[0-9a-f]{64}$") {
-        throw "The existing access key is invalid: $Path. Rename it and run the installer again."
-    }
-    Protect-SecretFile $Path
-    return $value
-}
-
-function Copy-SecretToClipboard([string]$Secret) {
-    if (-not (Get-Command Set-Clipboard -ErrorAction SilentlyContinue)) {
-        Write-Warning "Clipboard access is unavailable. Start-CS-Scout will try again."
-        return
-    }
-    try {
-        Set-Clipboard -Value $Secret
-        Write-Host "The access key was copied to the clipboard." -ForegroundColor Green
-    }
-    catch {
-        Write-Warning "Could not copy the access key. Use windows\Copy-Access-Key.cmd after installation."
-    }
-}
-
 try {
     $principal = [System.Security.Principal.WindowsPrincipal]::new(
         [System.Security.Principal.WindowsIdentity]::GetCurrent()
@@ -353,18 +293,6 @@ try {
         (Join-Path $localState "output")
     )) {
         [void](New-Item -ItemType Directory -Path $directory -Force)
-    }
-
-    $secretPath = Join-Path $localState "secret.key"
-    if (Test-Path -LiteralPath $secretPath -PathType Leaf) {
-        $secret = Read-ValidatedSecret $secretPath
-        Write-Host "Existing local access key preserved and protected."
-    }
-    else {
-        $secret = New-RandomSecret
-        [System.IO.File]::WriteAllText($secretPath, $secret, [System.Text.Encoding]::ASCII)
-        Protect-SecretFile $secretPath
-        Write-Host "A new local access key was generated."
     }
 
     Write-Step "Preparing 64-bit Python 3.11/3.12"
@@ -446,7 +374,6 @@ try {
     & $venvPython -c "import flask, requests, pandas, numpy, demoparser2; print('Runtime imports: OK')"
     Assert-LastExitCode "Importing runtime packages"
 
-    Copy-SecretToClipboard $secret
     Write-Host "`nInstallation is ready." -ForegroundColor Green
     Write-Host "Double-click windows\Start-CS-Scout.cmd to start CS-Scout."
     exit 0

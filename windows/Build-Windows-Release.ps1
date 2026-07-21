@@ -605,8 +605,6 @@ try {
         "RELEASE_NOTES_v2.0.2.md",
         "SECURITY.md",
         "THIRD_PARTY_NOTICES.md",
-        "windows\Copy-Access-Key.cmd",
-        "windows\Copy-Access-Key.ps1",
         "windows\Install-CS-Scout.cmd",
         "windows\Install-CS-Scout.ps1",
         "windows\README-PLAYER-ZH.md",

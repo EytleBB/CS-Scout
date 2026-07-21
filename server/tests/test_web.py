@@ -13,6 +13,8 @@ import web_server
 @pytest.fixture(autouse=True)
 def configured_analysis_secret(monkeypatch):
     monkeypatch.setattr(web_server.config, "SECRET_KEY", "test-secret")
+    monkeypatch.setattr(web_server.config, "LOCAL_MODE", False)
+    monkeypatch.setattr(web_server.config, "HOST", "127.0.0.1")
 
 
 @pytest.fixture
@@ -146,6 +148,20 @@ def test_health_and_readiness_are_generic_and_self_cleaning(monkeypatch, tmp_pat
     assert list(demo_dir.iterdir()) == []
 
 
+def test_local_mode_is_ready_without_a_server_secret(monkeypatch, tmp_path):
+    monkeypatch.setattr(web_server.config, "SECRET_KEY", "")
+    monkeypatch.setattr(web_server.config, "LOCAL_MODE", True)
+    monkeypatch.setattr(web_server.config, "HOST", "127.0.0.1")
+    monkeypatch.setattr(web_server.config, "OUTPUT_DIR", str(tmp_path / "output"))
+    monkeypatch.setattr(web_server.config, "DEMO_DIR", str(tmp_path / "demos"))
+    monkeypatch.setattr(web_server.maps, "available_maps", lambda: ["de_mirage"])
+
+    response = web_server.app.test_client().get("/readyz")
+
+    assert response.status_code == 200
+    assert response.get_json()["checks"]["secret_configured"] is True
+
+
 def test_readiness_failure_does_not_expose_paths_or_errors(monkeypatch, tmp_path):
     monkeypatch.setattr(web_server.config, "SECRET_KEY", "")
     monkeypatch.setattr(web_server.maps, "available_maps", lambda: [])
@@ -186,6 +202,56 @@ def test_analyze_requires_access_key():
     })
     assert response.status_code == 401
     assert response.headers["WWW-Authenticate"] == 'Bearer realm="CS-Scout"'
+
+
+def test_loopback_local_mode_allows_keyless_analysis(monkeypatch, isolated_web_state):
+    monkeypatch.setattr(web_server.config, "LOCAL_MODE", True)
+    monkeypatch.setattr(web_server.maps, "available_maps", lambda: ["de_mirage"])
+    launched = []
+
+    class CapturedThread:
+        def __init__(self, target, args=(), daemon=None):
+            launched.append((target, args, daemon))
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(web_server.threading, "Thread", CapturedThread)
+    response = web_server.app.test_client().post("/api/analyze", json={
+        "usernames": ["Alpha"], "map": "de_mirage", "max_demos": 1,
+    })
+
+    assert response.status_code == 200
+    assert len(launched) == 1
+
+
+def test_local_mode_never_bypasses_key_for_non_loopback_request(monkeypatch):
+    monkeypatch.setattr(web_server.config, "LOCAL_MODE", True)
+    response = web_server.app.test_client().post(
+        "/api/analyze",
+        json={"usernames": ["Alpha"], "map": "de_mirage"},
+        environ_base={"REMOTE_ADDR": "203.0.113.10"},
+    )
+    assert response.status_code == 401
+
+
+def test_local_index_hides_key_field_and_hosted_index_has_blank_field(monkeypatch):
+    client = web_server.app.test_client()
+    hosted_html = client.get("/").get_data(as_text=True)
+    assert 'id="key"' in hosted_html
+    assert 'id="key" type="password"' in hosted_html
+    assert 'placeholder=' not in hosted_html[hosted_html.index('id="key"'):hosted_html.index('id="key"') + 180]
+    assert 'data-local-analysis="false"' in hosted_html
+
+    monkeypatch.setattr(web_server.config, "LOCAL_MODE", True)
+    local_html = client.get("/").get_data(as_text=True)
+    assert 'id="key"' not in local_html
+    assert 'data-local-analysis="true"' in local_html
+
+    monkeypatch.setattr(web_server.config, "HOST", "0.0.0.0")
+    unsafe_html = client.get("/").get_data(as_text=True)
+    assert 'id="key"' in unsafe_html
+    assert 'data-local-analysis="false"' in unsafe_html
 
 
 def test_index_contains_unified_replay_layout():

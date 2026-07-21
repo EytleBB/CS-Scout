@@ -84,22 +84,22 @@ $windowsRoot = Join-Path $root "windows"
 Assert-True ($PSVersionTable.PSVersion.Major -ge 5) "Use Windows PowerShell 5.1 or newer to verify the package."
 
 $requiredWindowsFiles = @(
-    "Install-CS-Scout.ps1", "Start-CS-Scout.ps1", "Copy-Access-Key.ps1",
-    "Install-CS-Scout.cmd", "Start-CS-Scout.cmd", "Copy-Access-Key.cmd",
+    "Install-CS-Scout.ps1", "Start-CS-Scout.ps1",
+    "Install-CS-Scout.cmd", "Start-CS-Scout.cmd",
     "README-PLAYER-ZH.md", "Verify-Windows-Package.ps1"
 )
 foreach ($fileName in $requiredWindowsFiles) {
     Assert-NonEmptyFile (Join-Path $windowsRoot $fileName) "windows\$fileName"
 }
 
-foreach ($fileName in @("Install-CS-Scout.cmd", "Start-CS-Scout.cmd", "Copy-Access-Key.cmd")) {
+foreach ($fileName in @("Install-CS-Scout.cmd", "Start-CS-Scout.cmd")) {
     $wrapper = Get-Content -LiteralPath (Join-Path $windowsRoot $fileName) -Raw
     Assert-True ($wrapper -match '%~dp0') "$fileName must resolve files relative to itself."
     Assert-True ($wrapper -match '-NoProfile') "$fileName must not load the player's PowerShell profile."
     Assert-True ($wrapper -match '-ExecutionPolicy Bypass') "$fileName must launch its packaged script reliably."
 }
 
-foreach ($fileName in @("Install-CS-Scout.ps1", "Start-CS-Scout.ps1", "Copy-Access-Key.ps1", "Verify-Windows-Package.ps1")) {
+foreach ($fileName in @("Install-CS-Scout.ps1", "Start-CS-Scout.ps1", "Verify-Windows-Package.ps1")) {
     $tokens = $null
     $errors = $null
     [void][System.Management.Automation.Language.Parser]::ParseFile(
@@ -155,7 +155,6 @@ foreach ($map in $maps) {
 
 $installScript = Get-Content -LiteralPath (Join-Path $windowsRoot "Install-CS-Scout.ps1") -Raw
 $startScript = Get-Content -LiteralPath (Join-Path $windowsRoot "Start-CS-Scout.ps1") -Raw
-$copyScript = Get-Content -LiteralPath (Join-Path $windowsRoot "Copy-Access-Key.ps1") -Raw
 $configScript = Get-Content -LiteralPath (Join-Path $root "server\config.py") -Raw
 $webServerScript = Get-Content -LiteralPath (Join-Path $root "server\web_server.py") -Raw
 
@@ -212,30 +211,6 @@ $createPythonIndex = $installScript.IndexOf('& $python.Command @venvArguments')
 Assert-True ($createDirIndex -ge 0 -and $createMarkerIndex -gt $createDirIndex -and $createPythonIndex -gt $createMarkerIndex) "Installer must create the exact .venv and marker before invoking Python venv."
 Assert-True ($installScript -match '(?s)catch\s*\{.*?if \(Test-ManagedVenv \$venvDir\)\s*\{.*?Remove-SafeVenv \$projectRoot \$venvDir') "Failed creation cleanup must be guarded by the managed marker."
 
-# Clipboard failures must be local warnings, not installation/startup failures.
-foreach ($entry in @(
-    [pscustomobject]@{ Name = "installer"; Text = $installScript },
-    [pscustomobject]@{ Name = "starter"; Text = $startScript }
-)) {
-    Assert-True (
-        $entry.Text -match '(?s)function Copy-SecretToClipboard.*?try\s*\{.*?Set-Clipboard.*?\}\s*catch\s*\{.*?Write-Warning'
-    ) "$($entry.Name) clipboard handling must use a local try/catch."
-}
-
-# Secret ACLs are restored after every read.
-Assert-True ($installScript -match '(?s)function Read-ValidatedSecret.*?Protect-SecretFile \$Path') "Installer must re-protect an existing key."
-Assert-True ($startScript -match '(?s)function Get-OrCreateSecret.*?Protect-SecretFile \$Path') "Starter must re-protect an existing key."
-foreach ($entry in @(
-    [pscustomobject]@{ Name = "installer"; Text = $installScript },
-    [pscustomobject]@{ Name = "starter"; Text = $startScript },
-    [pscustomobject]@{ Name = "key copier"; Text = $copyScript }
-)) {
-    Assert-True ($entry.Text -match 'Get-Acl -LiteralPath \$Path') "$($entry.Name) must preserve the existing ACL owner."
-    Assert-True ($entry.Text -notmatch '\.SetOwner\(') "$($entry.Name) must not require owner-changing privileges."
-    Assert-True ($entry.Text -match 'RemoveAccessRuleAll') "$($entry.Name) must remove old explicit key access rules."
-    Assert-True ($entry.Text -match 'SetAccessRule\(\$rule\)') "$($entry.Name) must grant the current user access."
-}
-
 # Single-instance and kernel-assigned local port controls.
 Assert-True ($startScript -match 'System\.Threading\.Mutex') "Starter must use a named mutex."
 Assert-True ($startScript -match 'Local\\CS-Scout-') "Mutex must be local to the current Windows session and user SID."
@@ -260,7 +235,8 @@ Assert-True ($startScript -match 'Remove-Item -LiteralPath \$startupInfoPath') "
 # Child-only environment injection and restoration before browser launch.
 Assert-True ($startScript -match '"CS_SCOUT_HOST" = "127\.0\.0\.1"') "Starter must force loopback binding."
 Assert-True ($startScript -notmatch 'CS_SCOUT_HOST\s*=\s*"0\.0\.0\.0"') "Starter must never bind to all interfaces."
-Assert-True ($startScript -match '"CS_SCOUT_SECRET_KEY" = \$secret') "Starter must inject the generated key into the child."
+Assert-True ($startScript -match '"CS_SCOUT_LOCAL_MODE" = "1"') "Starter must enable loopback-only keyless analysis."
+Assert-True ($startScript -notmatch 'CS_SCOUT_SECRET_KEY') "Starter must not create or inject a local analysis key."
 Assert-True ($startScript -match '\$savedEnvironment') "Starter must save the original process environment."
 Assert-True ($startScript -match 'EnvironmentVariableTarget\]::Process') "Environment changes must be process-local."
 Assert-True ($startScript -match '(?s)try\s*\{.*?Start-Process.*?-FilePath \$venvPython.*?\}\s*finally\s*\{.*?\$savedEnvironment\[\$name\]') "Starter must restore the environment immediately after spawning Python."
@@ -268,7 +244,7 @@ $restoreIndex = $startScript.IndexOf('$savedEnvironment[$name],')
 $browserIndex = $startScript.IndexOf('Start-Process "$baseUri/"')
 Assert-True ($restoreIndex -ge 0 -and $browserIndex -gt $restoreIndex) "Browser must launch only after environment restoration."
 Assert-True ($startScript -match '-Uri "\$baseUri/readyz"') "Readiness must use the reported base URI."
-Assert-True ($startScript -match '-Uri "\$baseUri/api/status"') "Authenticated status must use the reported base URI."
+Assert-True ($startScript -match '-Uri "\$baseUri/api/status"') "Status probe must use the reported base URI."
 
 # The Python entry point must bind port zero atomically and publish the actual port.
 Assert-True ($configScript -match 'CS_SCOUT_PORT') "Server config must accept the starter's port override."
@@ -280,13 +256,12 @@ Assert-True ($webServerScript -match 'os\.getppid\(\)') "Local entry point must 
 Assert-True ($webServerScript -match 'os\.replace') "Startup information must be published atomically."
 Assert-True ($webServerScript -match '\.serve_forever\(\)') "Local entry point must serve after publishing its port."
 
-# Real deadline, JSON readiness, authenticated status, and process-liveness checks.
+# Real deadline, JSON readiness, status, and process-liveness checks.
 Assert-True ($startScript -match 'UtcNow\.AddSeconds\(30\)') "Starter must use a real 30-second deadline."
 Assert-True ($startScript -match 'UtcNow -lt \$deadline') "Starter must stop polling at its deadline."
 Assert-True ($startScript -match 'Invoke-RestMethod.*') "Starter must decode the readiness JSON."
 Assert-True ($startScript -match '\$readyDocument\.status -eq "ready"') "Starter must require status=ready."
-Assert-True ($startScript -match 'Authorization = "Bearer \$secret"') "Starter must authenticate its status probe."
-Assert-True ($startScript -match '\$authResponse\.StatusCode -eq 200') "Starter must require an authenticated HTTP 200."
+Assert-True ($startScript -match '\$statusResponse\.StatusCode -eq 200') "Starter must require a status HTTP 200."
 Assert-True (($startScript | Select-String -Pattern '\$serverProcess\.HasExited' -AllMatches).Matches.Count -ge 5) "Starter must repeatedly check child-process liveness."
 
 # Exit must remove only the process tree created by this starter.

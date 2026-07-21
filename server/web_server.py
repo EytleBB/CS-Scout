@@ -21,6 +21,7 @@ import threading
 import logging
 import re
 import hmac
+import ipaddress
 import tempfile
 
 from flask import Flask, abort, render_template, request, jsonify, send_from_directory
@@ -45,6 +46,7 @@ CACHE_CONTROL_PATHS = frozenset({
     "/api/analyze", "/api/status", "/api/results",
 })
 CACHE_CONTROL_PREFIXES = ("/api/player/", "/output/")
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 log = logging.getLogger("web")
 logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s")
@@ -82,6 +84,8 @@ def _bearer_key():
 
 def _require_access_key(data=None, allow_body_key=False):
     """Authenticate a sensitive request without leaking the configured key."""
+    if _local_analysis_allowed():
+        return None
     if not config.SECRET_KEY:
         return jsonify({
             "error": "Service access is disabled until CS_SCOUT_SECRET_KEY is configured"
@@ -110,6 +114,20 @@ def _require_access_key(data=None, allow_body_key=False):
     return response, status
 
 
+def _loopback_local_mode_enabled():
+    return config.LOCAL_MODE and config.HOST in LOOPBACK_HOSTS
+
+
+def _local_analysis_allowed():
+    """Allow keyless analysis only for the explicit loopback-only local mode."""
+    if not _loopback_local_mode_enabled():
+        return False
+    try:
+        return ipaddress.ip_address(request.remote_addr or "").is_loopback
+    except ValueError:
+        return False
+
+
 def _directory_is_writable(path):
     """Create a directory if needed and perform a self-cleaning write probe."""
     try:
@@ -134,7 +152,7 @@ def prevent_sensitive_response_caching(response):
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", local_mode=_loopback_local_mode_enabled())
 
 
 @app.route("/healthz")
@@ -150,7 +168,7 @@ def readyz():
         log.exception("Readiness map check failed")
         maps_ready = False
     checks = {
-        "secret_configured": bool(config.SECRET_KEY),
+        "secret_configured": bool(config.SECRET_KEY) or _loopback_local_mode_enabled(),
         "maps_available": maps_ready,
         "output_writable": _directory_is_writable(config.OUTPUT_DIR),
         "demo_cache_writable": _directory_is_writable(config.DEMO_DIR),

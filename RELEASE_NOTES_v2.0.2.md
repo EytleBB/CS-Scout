@@ -8,6 +8,7 @@
 - 网页打开后会自动读取当前进度和最近一次分析结果，不再要求先输入密钥。
 - `/api/status`、`/api/results`、玩家回放 JSON 和输出 JSON 现在可公开读取。
 - 分析密钥仅用于启动新的 Demo 下载与解析任务，仍不会写入浏览器持久存储。
+- Windows 玩家版改为仅回环地址可用的本地免密模式，不再生成、复制或要求输入本地密钥。
 - 服务重启后，网页会从 `analysis_summary.json` 恢复并展示最近一次分析结果。
 - 页面会持续轮询公开状态；检测到新任务时会清理旧回放，避免混合两次分析。
 
@@ -28,7 +29,8 @@ CS-Scout-Windows-x64-v2.0.2.zip
 1. `windows\Install-CS-Scout.cmd`
 2. `windows\Start-CS-Scout.cmd`
 
-现有密钥、Demo 缓存和分析输出仍保存在 `%LOCALAPPDATA%\CS-Scout`，升级不会删除这些数据。
+现有 Demo 缓存和分析输出仍保存在 `%LOCALAPPDATA%\CS-Scout`，升级不会删除这些数据。旧版
+曾生成的 `secret.key` 不再使用，保留它也不会影响运行。
 
 ## 完整性校验
 

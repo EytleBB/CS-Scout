@@ -30,15 +30,14 @@
 安装程序不会请求管理员权限，也不会修改系统防火墙。它会：
 
 - 在发布包内创建独立的 `.venv` Python 环境；
-- 在 `%LOCALAPPDATA%\CS-Scout` 创建运行数据目录；
-- 首次生成 64 位随机访问密钥，后续安装和升级会继续使用同一个密钥。
+- 在 `%LOCALAPPDATA%\CS-Scout` 创建运行数据目录。
 
 ## 三、启动
 
 1. 双击 `windows\Start-CS-Scout.cmd`。
 2. 启动窗口会显示本次使用的 `Address`，并自动打开这个地址。端口由 Windows 分配，
    所以不同电脑或不同启动次数显示的数字可能不同，这是正常现象。
-3. 分析密钥会自动复制到剪贴板；查看已有结果不需要密钥，开始新分析前在网页密钥框按 `Ctrl+V` 粘贴。
+3. 本机页面不会显示分析密钥框，直接填写玩家并点击“开始扫描”即可。
 4. 第一次使用建议选择“普通”模式、一名玩家和一个 Demo 进行测试。
 5. 使用期间保持黑色启动窗口打开。
 
@@ -47,16 +46,12 @@
 
 不要在分析任务运行时关闭黑色窗口。没有任务时，可按 `Ctrl+C` 或关闭窗口停止本机服务。
 
-如果之后需要重新复制密钥，双击 `windows\Copy-Access-Key.cmd`。不要把密钥发给陌生人，
-也不要把 `%LOCALAPPDATA%\CS-Scout\secret.key` 上传到网盘或 GitHub。
-
 ## 四、文件保存位置
 
 这些目录不会放进发布包，升级程序时可以继续保留：
 
 ```text
 %LOCALAPPDATA%\CS-Scout\
-├─ secret.key    访问密钥
 ├─ demos\        已下载的 Demo 缓存
 └─ output\       最近分析生成的 JSON
 ```
@@ -70,7 +65,7 @@
 3. 双击新版本的 `windows\Install-CS-Scout.cmd`。
 4. 安装成功后从新版本运行 `windows\Start-CS-Scout.cmd`。
 
-密钥、Demo 缓存和输出位于 `%LOCALAPPDATA%\CS-Scout`，不会因为更换发布包而丢失。
+Demo 缓存和输出位于 `%LOCALAPPDATA%\CS-Scout`，不会因为更换发布包而丢失。
 确认新版本可用后，可以删除旧版本解压目录。
 
 ## 六、常见问题
@@ -96,22 +91,12 @@ python.org 提供的版本并保留 Python Launcher。
 如果可用空间低于 9 GB，启动器会停止运行；需要释放空间后再试。停止 CS-Scout 后可以
 删除 `%LOCALAPPDATA%\CS-Scout\demos`，其中的索引文件之后会自动重建。
 
-### 提示无法收紧访问密钥 ACL
-
-某些远程云电脑不允许应用修改文件权限。这条警告不会阻止本机使用；密钥仍保存在当前
-用户的 `%LOCALAPPDATA%\CS-Scout\secret.key`。不要共享或上传这个文件。
-
-### 开始分析时提示密钥错误
-
-双击 `windows\Copy-Access-Key.cmd`，回到网页重新粘贴。不要输入服务器版本使用的共享密钥；
-每台玩家电脑都有自己的本地密钥。
-
 ### 安装依赖失败
 
 检查网络、代理或安全软件后，再次运行 `Install-CS-Scout.cmd`。安装脚本是幂等的，重复运行
-不会删除密钥、Demo 或输出。
+不会删除 Demo 或输出。
 
 ## 七、卸载
 
-先停止 CS-Scout，然后删除解压出来的发布包目录即可删除程序。如果还要彻底删除密钥、
-Demo 和分析结果，再手动删除 `%LOCALAPPDATA%\CS-Scout`。此操作无法恢复，请先确认没有需要保留的数据。
+先停止 CS-Scout，然后删除解压出来的发布包目录即可删除程序。如果还要彻底删除 Demo
+和分析结果，再手动删除 `%LOCALAPPDATA%\CS-Scout`。此操作无法恢复，请先确认没有需要保留的数据。
