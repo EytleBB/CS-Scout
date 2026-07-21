@@ -15,9 +15,9 @@
 ## 二、下载和安装
 
 1. 在 GitHub Releases 页面下载名称类似
-   `CS-Scout-Windows-x64-v2.0.1.zip` 的 Windows 发布包。
+   `CS-Scout-Windows-x64-v2.0.2.zip` 的 Windows 发布包。
 2. 同时下载 `SHA256SUMS.txt`，在 ZIP 所在目录运行
-   `Get-FileHash -Algorithm SHA256 .\CS-Scout-Windows-x64-v2.0.1.zip`，确认结果与
+   `Get-FileHash -Algorithm SHA256 .\CS-Scout-Windows-x64-v2.0.2.zip`，确认结果与
    校验文件中的 64 位散列完全相同；不同就不要运行。
 3. 不要下载 GitHub 自动生成的 `Source code (zip)` 或 `Source code (tar.gz)`；它们可能不含雷达地图。
 4. 右键 ZIP，选择“全部解压”。不要直接在压缩包预览窗口里运行程序。
@@ -38,7 +38,7 @@
 1. 双击 `windows\Start-CS-Scout.cmd`。
 2. 启动窗口会显示本次使用的 `Address`，并自动打开这个地址。端口由 Windows 分配，
    所以不同电脑或不同启动次数显示的数字可能不同，这是正常现象。
-3. 访问密钥会自动复制到剪贴板；在网页密钥框按 `Ctrl+V` 粘贴。
+3. 分析密钥会自动复制到剪贴板；查看已有结果不需要密钥，开始新分析前在网页密钥框按 `Ctrl+V` 粘贴。
 4. 第一次使用建议选择“普通”模式、一名玩家和一个 Demo 进行测试。
 5. 使用期间保持黑色启动窗口打开。
 
@@ -101,7 +101,7 @@ python.org 提供的版本并保留 Python Launcher。
 某些远程云电脑不允许应用修改文件权限。这条警告不会阻止本机使用；密钥仍保存在当前
 用户的 `%LOCALAPPDATA%\CS-Scout\secret.key`。不要共享或上传这个文件。
 
-### 网页提示密钥错误
+### 开始分析时提示密钥错误
 
 双击 `windows\Copy-Access-Key.cmd`，回到网页重新粘贴。不要输入服务器版本使用的共享密钥；
 每台玩家电脑都有自己的本地密钥。

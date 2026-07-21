@@ -21,6 +21,7 @@ let pollTimer = null;
 let pollEpoch = 0;
 let analysisMode = "normal";
 let lastKnownAnalysisRunning = false;
+let publicMonitoringEnabled = false;
 // The app keeps this only in page memory and never writes it to browser
 // storage. Browser extensions and password managers still apply their own
 // form-handling policies.
@@ -214,12 +215,7 @@ async function connectWithEnteredKey() {
   accessKey = keyInput && typeof keyInput.value === "string" ? keyInput.value.trim() : "";
   pollEpoch += 1;
   clearPollTimer();
-  if (!accessKey) {
-    setStatus("请输入访问密钥");
-    setAnalysisBusy(false);
-    return;
-  }
-  setStatus("正在验证密钥并读取分析状态…");
+  setStatus(accessKey ? "分析密钥已输入，正在刷新公开结果…" : "分析密钥已清除，仍可查看公开结果…");
   await poll(pollEpoch);
 }
 
@@ -504,7 +500,7 @@ async function addPlayer(result, epoch = pollEpoch) {
   runLoadingDomains.add(domain);
   runFetchControllers.add(fetchController);
   try {
-    const data = await requestProtectedJSON(`/api/player/${encodeURIComponent(domain)}`, {
+    const data = await requestJSON(`/api/player/${encodeURIComponent(domain)}`, {
       signal: fetchController.signal
     });
     if (epoch !== pollEpoch || runLoadingDomains !== loadingDomains) return;
@@ -554,10 +550,13 @@ async function addPlayer(result, epoch = pollEpoch) {
 
 async function poll(epoch = pollEpoch) {
   try {
-    const status = await requestProtectedJSON("/api/status");
+    const status = await requestJSON("/api/status");
     if (epoch !== pollEpoch) return;
     setStatus(status.message || status.status || "");
     const running = status.status === "running";
+    if (running && !lastKnownAnalysisRunning && players.size > 0) {
+      resetResults();
+    }
     lastKnownAnalysisRunning = running;
     if (running && (status.mode === "normal" || status.mode === "fast")) {
       setAnalysisMode(status.mode);
@@ -586,16 +585,9 @@ async function poll(epoch = pollEpoch) {
 
     if (running) schedulePoll(epoch, 2000);
     else if (retryNeeded) schedulePoll(epoch, 2500);
+    else if (publicMonitoringEnabled) schedulePoll(epoch, 5000);
   } catch (error) {
     if (epoch !== pollEpoch) return;
-    if (error.status === 401 || error.status === 403) {
-      accessKey = "";
-      lastKnownAnalysisRunning = false;
-      setStatus("访问密钥无效，请重新输入");
-      setAnalysisBusy(false);
-      clearPollTimer();
-      return;
-    }
     setStatus(`状态读取失败：${error.message}`);
     setAnalysisBusy(lastKnownAnalysisRunning);
     schedulePoll(epoch, 3000);
@@ -617,6 +609,10 @@ function boot() {
     });
   }
   loadMaps();
+  // Viewing current progress and the latest completed replay is public. The
+  // access key is only read when the visitor starts a new analysis.
+  publicMonitoringEnabled = true;
+  void poll(pollEpoch);
   updateClockControls();
   if (typeof requestAnimationFrame === "function") clock.raf = requestAnimationFrame(tick);
 }

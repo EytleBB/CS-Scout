@@ -41,10 +41,10 @@ GRENADE_ICON_FILES = frozenset({
 })
 SAFE_DOMAIN_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 MAX_USERNAME_LENGTH = 64
-SENSITIVE_PATHS = frozenset({
+CACHE_CONTROL_PATHS = frozenset({
     "/api/analyze", "/api/status", "/api/results",
 })
-SENSITIVE_PREFIXES = ("/api/player/", "/output/")
+CACHE_CONTROL_PREFIXES = ("/api/player/", "/output/")
 
 log = logging.getLogger("web")
 logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s")
@@ -64,8 +64,8 @@ state = {
 state_lock = threading.Lock()
 
 
-def _is_sensitive_path(path):
-    return path in SENSITIVE_PATHS or path.startswith(SENSITIVE_PREFIXES)
+def _must_not_cache(path):
+    return path in CACHE_CONTROL_PATHS or path.startswith(CACHE_CONTROL_PREFIXES)
 
 
 def _bearer_key():
@@ -124,7 +124,7 @@ def _directory_is_writable(path):
 
 @app.after_request
 def prevent_sensitive_response_caching(response):
-    if _is_sensitive_path(request.path):
+    if _must_not_cache(request.path):
         response.headers["Cache-Control"] = "no-store"
         response.headers["Pragma"] = "no-cache"
     return response
@@ -247,9 +247,6 @@ def api_maps():
 
 @app.route("/api/player/<domain>")
 def api_player(domain):
-    auth_error = _require_access_key()
-    if auth_error:
-        return auth_error
     if not SAFE_DOMAIN_RE.fullmatch(domain):
         return jsonify({"error": "not found"}), 404
     output_root = os.path.realpath(config.OUTPUT_DIR)
@@ -270,37 +267,69 @@ def api_player(domain):
 
 @app.route("/api/status")
 def api_status():
-    auth_error = _require_access_key()
-    if auth_error:
-        return auth_error
     with state_lock:
-        return jsonify(state)
+        snapshot = {
+            **state,
+            "progress": list(state.get("progress", [])),
+            "results": list(state.get("results", [])),
+            "failed": list(state.get("failed", [])),
+        }
+
+    # Gunicorn state is in memory, while completed results live on disk. After
+    # a service restart, expose the saved summary so a visitor immediately sees
+    # the latest completed analysis instead of an empty idle page.
+    if snapshot.get("status") == "idle" and not snapshot.get("results"):
+        try:
+            saved = _load_analysis_summary()
+        except (OSError, json.JSONDecodeError, ValueError):
+            log.exception("Could not restore saved analysis summary")
+        else:
+            saved_results = saved.get("results", [])
+            saved_failed = saved.get("failed", [])
+            if saved_results or saved_failed:
+                snapshot.update({
+                    "status": "done",
+                    "message": "已加载最近一次分析结果",
+                    "progress": [],
+                    "results": saved_results,
+                    "failed": saved_failed,
+                    "total_players": len(saved_results) + len(saved_failed),
+                    "max_demos": saved.get("max_demos", 10),
+                    "map": saved.get("map", ""),
+                    "mode": saved.get("mode", "normal"),
+                })
+    return jsonify(snapshot)
+
+
+def _load_analysis_summary():
+    summary_path = os.path.join(config.OUTPUT_DIR, "analysis_summary.json")
+    if not os.path.exists(summary_path):
+        return {
+            "results": [], "failed": [], "max_demos": 10,
+            "map": "", "mode": "normal",
+        }
+    with open(summary_path, encoding="utf-8") as f:
+        summary = json.load(f)
+    if not isinstance(summary, dict):
+        raise ValueError("analysis summary must be an object")
+    if not isinstance(summary.get("results", []), list):
+        raise ValueError("analysis summary results must be a list")
+    if not isinstance(summary.get("failed", []), list):
+        raise ValueError("analysis summary failed must be a list")
+    return summary
 
 
 @app.route("/api/results")
 def api_results():
-    auth_error = _require_access_key()
-    if auth_error:
-        return auth_error
-    summary_path = os.path.join(config.OUTPUT_DIR, "analysis_summary.json")
-    if not os.path.exists(summary_path):
-        return jsonify({
-            "results": [], "failed": [], "max_demos": 10,
-            "map": "", "mode": "normal",
-        })
     try:
-        with open(summary_path, encoding="utf-8") as f:
-            return jsonify(json.load(f))
-    except (OSError, json.JSONDecodeError):
+        return jsonify(_load_analysis_summary())
+    except (OSError, json.JSONDecodeError, ValueError):
         log.exception("Could not read analysis summary")
         return jsonify({"error": "results temporarily unavailable"}), 503
 
 
 @app.route("/output/<path:filename>")
 def serve_output(filename):
-    auth_error = _require_access_key()
-    if auth_error:
-        return auth_error
     return send_from_directory(config.OUTPUT_DIR, filename)
 
 
@@ -354,7 +383,7 @@ def _run_analysis(usernames, map_name, max_demos=10, mode="normal"):
             state["failed"] = failed
     except Exception:
         # Keep filesystem paths, upstream URLs and parser details in server
-        # logs. /api/status is visible to every holder of the shared key.
+        # logs. /api/status is public so visitors can follow live progress.
         log.exception("Analysis failed")
         with state_lock:
             state["status"] = "error"

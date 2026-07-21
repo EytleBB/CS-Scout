@@ -2,7 +2,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$Version = "2.0.1",
+    [string]$Version = "2.0.2",
     [string]$ProjectRoot = "",
     [string]$OutputDirectory = ""
 )
@@ -10,7 +10,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$ExpectedReleaseVersion = "2.0.1"
+$ExpectedReleaseVersion = "2.0.2"
 $ExpectedMaps = @(
     "de_ancient", "de_anubis", "de_dust2", "de_inferno",
     "de_mirage", "de_nuke", "de_overpass", "de_train"
@@ -602,7 +602,7 @@ try {
     $requiredFiles = @(
         "LICENSE",
         "README.md",
-        "RELEASE_NOTES_v2.0.1.md",
+        "RELEASE_NOTES_v2.0.2.md",
         "SECURITY.md",
         "THIRD_PARTY_NOTICES.md",
         "windows\Copy-Access-Key.cmd",
