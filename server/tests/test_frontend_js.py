@@ -365,6 +365,66 @@ global.fetch = async () => {{ fetchCount += 1; throw new Error("fetch must not r
     assert result.returncode == 0, result.stderr or result.stdout
 
 
+def test_local_frontend_starts_analysis_without_key_or_authorization_header():
+    script = f"""
+const {{ runAnalysis }} = require({json.dumps(os.path.abspath(APP_JS))});
+
+function element(overrides = {{}}) {{
+  return Object.assign({{
+    value: "", disabled: false, hidden: false, textContent: "", children: [],
+    replaceChildren(...children) {{ this.children = children; }}
+  }}, overrides);
+}}
+
+const elements = {{
+  "#map": element({{ value: "de_mirage" }}),
+  "#depth": element({{ value: "1" }}),
+  "#run": element(),
+  "#u0": element({{ value: "Alpha" }}),
+  "#u1": element(), "#u2": element(), "#u3": element(), "#u4": element(),
+  "#status": element(), "#failed": element()
+}};
+global.document = {{
+  body: {{ dataset: {{ localAnalysis: "true" }} }},
+  querySelector(selector) {{ return elements[selector] || null; }},
+  querySelectorAll() {{ return []; }},
+  createElement() {{ return element(); }}
+}};
+
+const requests = [];
+global.fetch = async (url, options) => {{
+  requests.push([url, options]);
+  if (url === "/api/analyze") return {{
+    ok: true, status: 200, async json() {{ return {{ status: "started" }}; }}
+  }};
+  if (url === "/api/status") return {{
+    ok: true, status: 200,
+    async json() {{ return {{ status: "idle", message: "idle", results: [], failed: [] }}; }}
+  }};
+  throw new Error(`unexpected URL: ${{url}}`);
+}};
+
+(async () => {{
+  await runAnalysis();
+  if (requests.length !== 2 || requests[0][0] !== "/api/analyze") {{
+    throw new Error(`local analysis did not start: ${{JSON.stringify(requests)}}`);
+  }}
+  const headers = requests[0][1] && requests[0][1].headers;
+  if (headers && headers.Authorization) {{
+    throw new Error("local analysis unexpectedly sent an Authorization header");
+  }}
+}})().catch(error => {{ console.error(error); process.exitCode = 1; }});
+"""
+    result = subprocess.run(
+        [NODE, "-e", script],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
 def test_entered_key_refreshes_public_analysis_without_sending_key():
     script = f"""
 const {{ connectWithEnteredKey }} = require({json.dumps(os.path.abspath(APP_JS))});

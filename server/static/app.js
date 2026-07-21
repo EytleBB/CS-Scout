@@ -30,6 +30,11 @@ let accessKey = "";
 const PLAYBACK_SPEEDS = [1, 2, 4];
 const clock = { elapsed: 0, playing: true, speed: 2, last: null, raf: null };
 
+function localAnalysisEnabled() {
+  return Boolean(document.body && document.body.dataset &&
+    document.body.dataset.localAnalysis === "true");
+}
+
 function playbackSeconds() {
   return typeof PLAYBACK_S === "number" && PLAYBACK_S > 0 ? PLAYBACK_S : 10;
 }
@@ -378,11 +383,13 @@ async function runAnalysis() {
       max_demos: depth ? Number(depth.value) : 6,
       mode: analysisMode
     };
-    await requestProtectedJSON("/api/analyze", {
+    const options = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
-    });
+    };
+    if (localAnalysisEnabled()) await requestJSON("/api/analyze", options);
+    else await requestProtectedJSON("/api/analyze", options);
     lastKnownAnalysisRunning = true;
     pollEpoch += 1;
     clearPollTimer();

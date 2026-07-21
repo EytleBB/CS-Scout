@@ -47,8 +47,8 @@ SAMPLE_EVERY = 8       # downsample stride in ticks (~8Hz)
 EQ_FULL_BUY = 3800     # legacy team-average threshold; retained for compatibility
 EQ_BUY_MIN = 2000      # personal equip floor for keeping a non-pistol Buy round
 
-# Server. Bind locally and disable analysis until a secret is explicitly set;
-# deployments can opt into public listening after configuring authentication.
+# Server. Hosted deployments require a secret. The Windows launcher opts into
+# LOCAL_MODE while binding to loopback, which removes unnecessary local auth.
 HOST = os.getenv("CS_SCOUT_HOST", "127.0.0.1")
 PORT = _port_env("CS_SCOUT_PORT", 5000)
 SECRET_KEY = os.getenv("CS_SCOUT_SECRET_KEY", "").strip()
@@ -70,6 +70,9 @@ def _boolean_env(name, default=False):
     if value is None:
         return bool(default)
     return value.strip().casefold() in {"1", "true", "yes", "on"}
+
+
+LOCAL_MODE = _boolean_env("CS_SCOUT_LOCAL_MODE", False)
 
 
 # Demo storage limits. The repository default keeps the legacy 30 GB local

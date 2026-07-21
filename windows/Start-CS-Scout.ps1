@@ -16,58 +16,6 @@ function New-RandomSecret {
     return ([System.BitConverter]::ToString($bytes)).Replace("-", "").ToLowerInvariant()
 }
 
-function Protect-SecretFile([string]$Path) {
-    try {
-        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-        $acl = Get-Acl -LiteralPath $Path
-        $acl.SetAccessRuleProtection($true, $false)
-        foreach ($existingRule in @($acl.Access)) {
-            [void]$acl.RemoveAccessRuleAll($existingRule)
-        }
-        $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
-            $identity,
-            [System.Security.AccessControl.FileSystemRights]::FullControl,
-            [System.Security.AccessControl.AccessControlType]::Allow
-        )
-        [void]$acl.SetAccessRule($rule)
-        Set-Acl -LiteralPath $Path -AclObject $acl
-    }
-    catch {
-        Write-Warning "Could not tighten the key file ACL. This does not prevent local use; keep the key private."
-    }
-}
-
-function Get-OrCreateSecret([string]$Path) {
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        $newSecret = New-RandomSecret
-        [System.IO.File]::WriteAllText($Path, $newSecret, [System.Text.Encoding]::ASCII)
-    }
-    $raw = Get-Content -LiteralPath $Path -Raw
-    if ($null -eq $raw) {
-        throw "The local access key file is empty: $Path"
-    }
-    $value = ([string]$raw).Trim()
-    if ($value -notmatch "^[0-9a-f]{64}$") {
-        throw "The local access key is invalid: $Path. Rename it and run the installer again."
-    }
-    Protect-SecretFile $Path
-    return $value
-}
-
-function Copy-SecretToClipboard([string]$Secret) {
-    if (-not (Get-Command Set-Clipboard -ErrorAction SilentlyContinue)) {
-        Write-Warning "Clipboard access is unavailable. Run Copy-Access-Key.cmd to copy the key."
-        return
-    }
-    try {
-        Set-Clipboard -Value $Secret
-        Write-Host "Access key copied. Paste it into the page with Ctrl+V." -ForegroundColor Green
-    }
-    catch {
-        Write-Warning "Could not copy the access key. Run Copy-Access-Key.cmd and try again."
-    }
-}
-
 function Get-PythonInfo([string]$Command) {
     $probe = @()
     $probeExitCode = -1
@@ -267,7 +215,6 @@ try {
     $localState = Join-Path $env:LOCALAPPDATA "CS-Scout"
     $demoDir = Join-Path $localState "demos"
     $outputDir = Join-Path $localState "output"
-    $secretPath = Join-Path $localState "secret.key"
 
     if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
         throw "CS-Scout is not installed yet. Run windows\Install-CS-Scout.cmd first."
@@ -293,7 +240,6 @@ try {
     if ($freeGB -lt 16) {
         Write-Warning "Only $freeGB GB is free. Start with Normal mode and 1-2 Demos, or free more disk space before a larger analysis."
     }
-    $secret = Get-OrCreateSecret $secretPath
     $startupInfoPath = Join-Path $localState (
         "startup-" + [System.Guid]::NewGuid().ToString("N") + ".json"
     )
@@ -308,9 +254,9 @@ try {
     $childEnvironment = [ordered]@{
         "CS_SCOUT_HOST" = "127.0.0.1"
         "CS_SCOUT_PORT" = "0"
+        "CS_SCOUT_LOCAL_MODE" = "1"
         "CS_SCOUT_STARTUP_INFO" = $startupInfoPath
         "CS_SCOUT_STARTUP_TOKEN" = $startupToken
-        "CS_SCOUT_SECRET_KEY" = $secret
         "CS_SCOUT_DEMO_DIR" = $demoDir
         "CS_SCOUT_OUTPUT_DIR" = $outputDir
         "CS_SCOUT_MAPS_DIR" = $mapsRoot
@@ -396,15 +342,14 @@ try {
                 break
             }
             if ($null -ne $readyDocument -and $readyDocument.status -eq "ready") {
-                $authResponse = Invoke-WebRequest `
+                $statusResponse = Invoke-WebRequest `
                     -UseBasicParsing `
                     -Uri "$baseUri/api/status" `
-                    -Headers @{ Authorization = "Bearer $secret" } `
                     -TimeoutSec 1
                 if ($serverProcess.HasExited) {
                     break
                 }
-                if ($authResponse.StatusCode -eq 200) {
+                if ($statusResponse.StatusCode -eq 200) {
                     $ready = $true
                     break
                 }
@@ -426,7 +371,7 @@ try {
         if (-not $startupReceived) {
             throw "CS-Scout did not report its local address within 30 seconds."
         }
-        throw "CS-Scout did not pass readiness and access-key checks within 30 seconds."
+        throw "CS-Scout did not pass readiness checks within 30 seconds."
     }
     Start-Sleep -Milliseconds 100
     $serverProcess.Refresh()
@@ -434,7 +379,6 @@ try {
         throw "CS-Scout exited immediately after its startup checks."
     }
 
-    Copy-SecretToClipboard $secret
     try {
         Start-Process "$baseUri/"
     }
