@@ -16,7 +16,9 @@ def test_fast_parse_executor_uses_spawn_and_executes_picklable_work():
 
 
 def _install_fast_pipeline_fakes(tmp_path, monkeypatch, demos_per_player=2):
-    monkeypatch.setattr(pipeline, "cleanup_demos", lambda demo_dir: None)
+    monkeypatch.setattr(
+        pipeline, "cleanup_demos", lambda demo_dir, *args, **kwargs: None
+    )
     monkeypatch.setattr(pipeline.config, "DEMO_DIR", str(tmp_path / "demos"))
     monkeypatch.setattr(pipeline.config, "OUTPUT_DIR", str(tmp_path / "output"))
     monkeypatch.setattr(

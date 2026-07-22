@@ -540,7 +540,15 @@ def _begin_task_storage():
         _active_disk_budget = budget
     try:
         cleanup_orphan_demo_artifacts(config.DEMO_DIR)
-        cleanup_demos(config.DEMO_DIR)
+        # Start every task at the configured low-water mark.  Waiting until
+        # the cache is already over the hard limit leaves too little room for
+        # the next archive: a cache just under the limit can reject every
+        # download before the ordinary high-water cleanup ever runs.
+        cleanup_demos(
+            config.DEMO_DIR,
+            limit_gb=config.DEMO_CACHE_TARGET_GB,
+            target_gb=config.DEMO_CACHE_TARGET_GB,
+        )
     except Exception:
         with _active_disk_budget_lock:
             if _active_disk_budget is budget:

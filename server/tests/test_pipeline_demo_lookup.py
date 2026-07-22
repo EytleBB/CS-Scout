@@ -16,7 +16,9 @@ class ImmediateThread:
 
 def test_demo_lookup_failure_has_explicit_reason(tmp_path, monkeypatch):
     monkeypatch.setattr(pipeline.threading, "Thread", ImmediateThread)
-    monkeypatch.setattr(pipeline, "cleanup_demos", lambda demo_dir: None)
+    monkeypatch.setattr(
+        pipeline, "cleanup_demos", lambda demo_dir, *args, **kwargs: None
+    )
     monkeypatch.setattr(pipeline.config, "DEMO_DIR", str(tmp_path / "demos"))
     monkeypatch.setattr(pipeline.config, "OUTPUT_DIR", str(tmp_path / "output"))
     monkeypatch.setattr(
@@ -45,7 +47,9 @@ def test_unexpected_lookup_error_becomes_failure_and_stage_finishes(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(pipeline.threading, "Thread", ImmediateThread)
-    monkeypatch.setattr(pipeline, "cleanup_demos", lambda demo_dir: None)
+    monkeypatch.setattr(
+        pipeline, "cleanup_demos", lambda demo_dir, *args, **kwargs: None
+    )
     monkeypatch.setattr(pipeline.config, "DEMO_DIR", str(tmp_path / "demos"))
     monkeypatch.setattr(pipeline.config, "OUTPUT_DIR", str(tmp_path / "output"))
     monkeypatch.setattr(
@@ -74,7 +78,9 @@ def test_success_uses_domain_for_steamid_defaults_combat_and_calls_result_cb(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(pipeline.threading, "Thread", ImmediateThread)
-    monkeypatch.setattr(pipeline, "cleanup_demos", lambda demo_dir: None)
+    monkeypatch.setattr(
+        pipeline, "cleanup_demos", lambda demo_dir, *args, **kwargs: None
+    )
     monkeypatch.setattr(pipeline.config, "DEMO_DIR", str(tmp_path / "demos"))
     monkeypatch.setattr(pipeline.config, "OUTPUT_DIR", str(tmp_path / "output"))
     monkeypatch.setattr(
@@ -156,7 +162,9 @@ def test_invalid_upstream_domain_is_rejected_before_demo_lookup(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(pipeline.threading, "Thread", ImmediateThread)
-    monkeypatch.setattr(pipeline, "cleanup_demos", lambda demo_dir: None)
+    monkeypatch.setattr(
+        pipeline, "cleanup_demos", lambda demo_dir, *args, **kwargs: None
+    )
     monkeypatch.setattr(pipeline.config, "DEMO_DIR", str(tmp_path / "demos"))
     monkeypatch.setattr(pipeline.config, "OUTPUT_DIR", str(tmp_path / "output"))
     monkeypatch.setattr(
@@ -183,7 +191,9 @@ def test_unexpected_parse_and_combat_errors_are_isolated(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(pipeline.threading, "Thread", ImmediateThread)
-    monkeypatch.setattr(pipeline, "cleanup_demos", lambda demo_dir: None)
+    monkeypatch.setattr(
+        pipeline, "cleanup_demos", lambda demo_dir, *args, **kwargs: None
+    )
     monkeypatch.setattr(pipeline.config, "DEMO_DIR", str(tmp_path / "demos"))
     monkeypatch.setattr(pipeline.config, "OUTPUT_DIR", str(tmp_path / "output"))
     monkeypatch.setattr(
