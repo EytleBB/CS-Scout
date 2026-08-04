@@ -1,4 +1,5 @@
 import os, sys, pytest
+import pandas as pd
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import combat
 
@@ -27,6 +28,29 @@ def test_parse_combat_isolates_malformed_demo(monkeypatch):
     )
 
     assert combat.parse_combat_stats("broken.dem", "765") is None
+
+
+def test_combat_context_reuses_existing_classification(monkeypatch):
+    class ContextParser:
+        def parse_ticks(self, fields, ticks):
+            assert fields == ["kills_total", "deaths_total", "steamid"]
+            return pd.DataFrame([{
+                "kills_total": 12, "deaths_total": 6, "steamid": "765",
+            }])
+
+    monkeypatch.setattr(
+        combat.parse,
+        "get_round_table",
+        lambda _events: (_ for _ in ()).throw(AssertionError("events reparsed")),
+    )
+    stats = combat.parse_combat_stats_from_context(
+        ContextParser(),
+        {"round_end": pd.DataFrame([{"tick": 100}])},
+        "765",
+        classified=[],
+    )
+
+    assert stats == {"kd": 2.0, "awp_rounds": 0, "total_rounds": 0}
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "..", "..",
     "demos_analysis", "g161-n-20260123174821830606429_de_mirage.dem")

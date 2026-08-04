@@ -29,14 +29,14 @@ other users' data, or disclose it publicly before a fix can be prepared.
 Do **not** post any of the following in a public issue, discussion, pull request,
 commit, screenshot, log, or test fixture:
 
-- `CS_SCOUT_SECRET_KEY`, Bearer authorization headers, GitHub tokens, or other
-  credentials;
+- `CS_SCOUT_SECRET_KEY`, Bearer authorization headers, GitHub tokens, Perfect
+  World access tokens, `Pwa-Jt`, signed Demo URLs, or other credentials;
 - `.env` files or deployment configuration containing secrets;
 - downloaded CS2 `.dem` files or private Demo download URLs;
 - player output JSON, Steam IDs, usernames, replay paths, or analysis results
   that have not been explicitly approved for public sharing; or
-- server logs, IP addresses, or filesystem paths that identify a deployment or
-  player.
+- server logs, Perfect World client logs, IP addresses, or filesystem paths
+  that identify a deployment or player.
 
 If a credential may have been exposed, revoke or rotate it immediately before
 continuing the report. Replace all sensitive values with clearly marked dummy

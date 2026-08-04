@@ -20,7 +20,12 @@ let uiFailures = new Map();
 let pollTimer = null;
 let pollEpoch = 0;
 let analysisMode = "normal";
+let activePlatform = "5e";
+let availableMapNames = [];
+let pwaCanAnalyze = false;
+let fiveEUsernames = ["", "", "", "", ""];
 let lastKnownAnalysisRunning = false;
+let analysisBusy = false;
 let publicMonitoringEnabled = false;
 // The app keeps this only in page memory and never writes it to browser
 // storage. Browser extensions and password managers still apply their own
@@ -78,10 +83,138 @@ function setAnalysisMode(mode) {
 
 function setAnalysisBusy(busy) {
   const disabled = Boolean(busy);
+  analysisBusy = disabled;
   const runButton = $("#run");
-  if (runButton) runButton.disabled = disabled;
+  if (runButton) {
+    runButton.disabled = disabled ||
+      (activePlatform === "perfectworld" && !pwaCanAnalyze);
+  }
   for (const button of document.querySelectorAll("[data-analysis-mode]")) {
     button.disabled = disabled;
+  }
+  for (const button of document.querySelectorAll("[data-platform]")) {
+    button.disabled = disabled;
+  }
+  const depth = $("#depth");
+  if (depth && activePlatform === "perfectworld") depth.disabled = disabled;
+}
+
+function updatePlatformControls() {
+  const perfectWorld = activePlatform === "perfectworld";
+  for (const button of document.querySelectorAll("[data-platform]")) {
+    const active = button.dataset.platform === activePlatform;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  }
+  for (const section of document.querySelectorAll("[data-five-e-only]")) {
+    section.hidden = perfectWorld;
+  }
+  const hint = $("#pwa-hint");
+  if (hint) hint.hidden = !perfectWorld;
+  const mapSelect = $("#map");
+  if (mapSelect) mapSelect.disabled = perfectWorld || availableMapNames.length === 0;
+  const playerLabel = $("#player-input-label");
+  if (playerLabel) playerLabel.textContent = perfectWorld ? "完美平台用户名" : "5E 用户名";
+  for (let index = 0; index < 5; index += 1) {
+    const input = $(`#u${index}`);
+    if (!input) continue;
+    input.readOnly = perfectWorld;
+    input.setAttribute("aria-readonly", String(perfectWorld));
+    input.setAttribute(
+      "aria-label",
+      perfectWorld ? `完美平台用户名 ${index + 1}` :
+        (index === 0 ? "5E 用户名" : `对手用户名 ${index + 1}`)
+    );
+    input.placeholder = perfectWorld ? `等待识别对手 ${index + 1}` : `对手用户名 ${index + 1}`;
+    if (!perfectWorld) input.value = fiveEUsernames[index] || "";
+  }
+  const runButton = $("#run");
+  if (runButton) runButton.textContent = perfectWorld ? "开始分析" : "开始扫描";
+  const emptyTitle = $("#empty-title");
+  const emptyDescription = $("#empty-description");
+  if (emptyTitle) emptyTitle.textContent = perfectWorld ? "等待进入完美平台对局" : "等待扫描数据";
+  if (emptyDescription) {
+    emptyDescription.textContent = perfectWorld
+      ? "匹配到对局后会自动填入对手；确认名单并点击开始分析后，这里会显示回放。"
+      : "完成左侧设置并开始扫描后，这里会显示合并手枪局和每位玩家的 Buy 回放。";
+  }
+}
+
+function showPerfectWorldTargets(targets) {
+  const names = Array.isArray(targets)
+    ? targets.slice(0, 5).map(item => String(item && item.username || ""))
+    : [];
+  for (let index = 0; index < 5; index += 1) {
+    const input = $(`#u${index}`);
+    if (input) input.value = names[index] || "";
+  }
+}
+
+async function configurePerfectWorld() {
+  const depth = $("#depth");
+  const maxDemos = depth ? Number(depth.value) : 6;
+  try {
+    await requestJSON("/api/pwa/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ max_demos: maxDemos })
+    });
+  } catch (error) {
+    // A 409 means the current automatic analysis has already captured its
+    // depth. The new value will be used for the next match.
+    if (error.status !== 409) throw error;
+  }
+}
+
+async function setPlatform(platform) {
+  if (analysisBusy) return;
+  if (platform !== "5e" && platform !== "perfectworld") return;
+  if (activePlatform === "5e" && platform === "perfectworld") {
+    fiveEUsernames = Array.from({ length: 5 }, (_item, index) => {
+      const input = $(`#u${index}`);
+      return input ? input.value : "";
+    });
+  }
+  activePlatform = platform;
+  pwaCanAnalyze = false;
+  if (platform === "perfectworld") showPerfectWorldTargets([]);
+  pollEpoch += 1;
+  const epoch = pollEpoch;
+  clearPollTimer();
+  lastKnownAnalysisRunning = false;
+  resetResults();
+  updatePlatformControls();
+  setAnalysisBusy(false);
+  if (platform === "perfectworld") {
+    setStatus("正在连接完美平台自动侦察…");
+    try {
+      await configurePerfectWorld();
+    } catch (error) {
+      if (epoch !== pollEpoch) return;
+      setStatus(`完美平台连接失败：${error.message}`);
+    }
+  } else {
+    setStatus("已切换到 5E，可输入用户名开始扫描。");
+  }
+  if (epoch === pollEpoch) await poll(epoch);
+}
+
+async function runPerfectWorldAnalysis() {
+  pwaCanAnalyze = false;
+  setAnalysisBusy(true);
+  try {
+    await configurePerfectWorld();
+    await requestJSON("/api/pwa/analyze", { method: "POST" });
+    lastKnownAnalysisRunning = true;
+    pollEpoch += 1;
+    clearPollTimer();
+    resetResults();
+    setStatus("已确认对手，正在开始分析…");
+    await poll(pollEpoch);
+  } catch (error) {
+    lastKnownAnalysisRunning = false;
+    setStatus(error.status === 409 ? "当前名单尚未就绪或分析已经开始。" : `错误：${error.message}`);
+    await poll(pollEpoch);
   }
 }
 
@@ -149,6 +282,7 @@ function wireControls() {
   const t = $("#side-t");
   const speedButtons = document.querySelectorAll("[data-playback-speed]");
   const modeButtons = document.querySelectorAll("[data-analysis-mode]");
+  const platformButtons = document.querySelectorAll("[data-platform]");
   if (playPause) {
     playPause.addEventListener("click", () => {
       clock.playing = !clock.playing;
@@ -175,8 +309,12 @@ function wireControls() {
   for (const button of modeButtons) {
     button.addEventListener("click", () => setAnalysisMode(button.dataset.analysisMode));
   }
+  for (const button of platformButtons) {
+    button.addEventListener("click", () => { void setPlatform(button.dataset.platform); });
+  }
   setPlaybackSpeed(clock.speed);
   setAnalysisMode(analysisMode);
+  updatePlatformControls();
   document.addEventListener("visibilitychange", () => { clock.last = null; });
 }
 
@@ -253,6 +391,7 @@ async function loadMaps() {
   try {
     const data = await requestJSON("/api/maps");
     const mapNames = Array.isArray(data.maps) ? data.maps : [];
+    availableMapNames = mapNames.map(String);
     select.replaceChildren();
     for (const mapName of mapNames) {
       const option = document.createElement("option");
@@ -260,9 +399,10 @@ async function loadMaps() {
       option.textContent = String(mapName);
       select.appendChild(option);
     }
-    select.disabled = mapNames.length === 0;
+    select.disabled = activePlatform === "perfectworld" || mapNames.length === 0;
     if (mapNames.length === 0) setStatus("没有可用地图，请先生成地图资源。");
   } catch (error) {
+    availableMapNames = [];
     select.replaceChildren();
     select.disabled = true;
     setStatus(`地图加载失败：${error.message}`);
@@ -371,6 +511,10 @@ function resetResults() {
 }
 
 async function runAnalysis() {
+  if (activePlatform === "perfectworld") {
+    await runPerfectWorldAnalysis();
+    return;
+  }
   const mapSelect = $("#map");
   const depth = $("#depth");
   const key = $("#key");
@@ -507,9 +651,13 @@ async function addPlayer(result, epoch = pollEpoch) {
   runLoadingDomains.add(domain);
   runFetchControllers.add(fetchController);
   try {
-    const data = await requestJSON(`/api/player/${encodeURIComponent(domain)}`, {
-      signal: fetchController.signal
-    });
+    const data = activePlatform === "perfectworld"
+      ? await requestJSON(`/api/pwa/player/${encodeURIComponent(domain)}`, {
+        signal: fetchController.signal
+      })
+      : await requestJSON(`/api/player/${encodeURIComponent(domain)}`, {
+        signal: fetchController.signal
+      });
     if (epoch !== pollEpoch || runLoadingDomains !== loadingDomains) return;
     if (players.has(domain)) return;
     if (!data || !Array.isArray(data.rounds) || !data.transform || !data.radar) {
@@ -557,15 +705,34 @@ async function addPlayer(result, epoch = pollEpoch) {
 
 async function poll(epoch = pollEpoch) {
   try {
-    const status = await requestJSON("/api/status");
+    const perfectWorld = activePlatform === "perfectworld";
+    const status = perfectWorld
+      ? await requestJSON("/api/pwa/status")
+      : await requestJSON("/api/status");
     if (epoch !== pollEpoch) return;
     setStatus(status.message || status.status || "");
-    const running = status.status === "running";
+    const running = perfectWorld
+      ? ["detected", "queued", "analyzing"].includes(status.phase)
+      : status.status === "running";
+    if (perfectWorld && status.map) {
+      const mapSelect = $("#map");
+      if (mapSelect && availableMapNames.includes(String(status.map))) {
+        mapSelect.value = String(status.map);
+      }
+    }
+    if (perfectWorld) {
+      showPerfectWorldTargets(status.targets);
+      pwaCanAnalyze = status.phase === "awaiting_confirmation";
+      const emptyTitle = $("#empty-title");
+      if (emptyTitle && status.phase === "awaiting_confirmation") {
+        emptyTitle.textContent = "请确认完美平台对手";
+      }
+    }
     if (running && !lastKnownAnalysisRunning && players.size > 0) {
       resetResults();
     }
     lastKnownAnalysisRunning = running;
-    if (running && (status.mode === "normal" || status.mode === "fast")) {
+    if (!perfectWorld && running && (status.mode === "normal" || status.mode === "fast")) {
       setAnalysisMode(status.mode);
     }
     setAnalysisBusy(running);
@@ -590,8 +757,9 @@ async function poll(epoch = pollEpoch) {
     }
     renderFailures();
 
-    if (running) schedulePoll(epoch, 2000);
+    if (running) schedulePoll(epoch, perfectWorld ? 1000 : 2000);
     else if (retryNeeded) schedulePoll(epoch, 2500);
+    else if (perfectWorld) schedulePoll(epoch, status.phase === "error" ? 3000 : 1500);
     else if (publicMonitoringEnabled) schedulePoll(epoch, 5000);
   } catch (error) {
     if (epoch !== pollEpoch) return;
@@ -606,6 +774,7 @@ function boot() {
   try { wireControls(); } catch (error) { console.error("Control setup failed", error); }
   const runButton = $("#run");
   const keyInput = $("#key");
+  const depthInput = $("#depth");
   if (runButton) runButton.addEventListener("click", runAnalysis);
   if (keyInput) {
     keyInput.addEventListener("change", connectWithEnteredKey);
@@ -613,6 +782,11 @@ function boot() {
       if (event.key !== "Enter") return;
       event.preventDefault();
       connectWithEnteredKey();
+    });
+  }
+  if (depthInput) {
+    depthInput.addEventListener("change", () => {
+      if (activePlatform === "perfectworld") void configurePerfectWorld();
     });
   }
   loadMaps();
@@ -633,6 +807,7 @@ if (typeof module !== "undefined") {
   module.exports = {
     activateReplayView, registerReplayView, drawAll, playbackElapsedDelta,
     wireControls, setAnalysisMode, setAnalysisBusy, runAnalysis,
-    connectWithEnteredKey,
+    connectWithEnteredKey, setPlatform, updatePlatformControls,
+    showPerfectWorldTargets, runPerfectWorldAnalysis,
   };
 }

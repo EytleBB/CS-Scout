@@ -215,6 +215,8 @@ try {
     $localState = Join-Path $env:LOCALAPPDATA "CS-Scout"
     $demoDir = Join-Path $localState "demos"
     $outputDir = Join-Path $localState "output"
+    $pwaDemoDir = Join-Path $localState "perfectworld\demos"
+    $pwaOutputDir = Join-Path $localState "perfectworld\output"
 
     if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
         throw "CS-Scout is not installed yet. Run windows\Install-CS-Scout.cmd first."
@@ -228,7 +230,7 @@ try {
     }
     Assert-MapAssets $mapsRoot
 
-    foreach ($directory in @($localState, $demoDir, $outputDir)) {
+    foreach ($directory in @($localState, $demoDir, $outputDir, $pwaDemoDir, $pwaOutputDir)) {
         [void](New-Item -ItemType Directory -Path $directory -Force)
     }
     $stateItem = Get-Item -LiteralPath $localState
@@ -259,6 +261,8 @@ try {
         "CS_SCOUT_STARTUP_TOKEN" = $startupToken
         "CS_SCOUT_DEMO_DIR" = $demoDir
         "CS_SCOUT_OUTPUT_DIR" = $outputDir
+        "CS_SCOUT_PWA_DEMO_DIR" = $pwaDemoDir
+        "CS_SCOUT_PWA_OUTPUT_DIR" = $pwaOutputDir
         "CS_SCOUT_MAPS_DIR" = $mapsRoot
         "PYTHONUTF8" = "1"
         "PYTHONUNBUFFERED" = "1"

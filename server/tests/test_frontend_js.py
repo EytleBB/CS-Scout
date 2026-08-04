@@ -177,12 +177,16 @@ function modeButton(mode) {{
 }}
 
 const modes = [modeButton("normal"), modeButton("fast")];
+const platforms = [modeButton("normal"), modeButton("fast")];
+platforms[0].dataset = {{ platform: "5e" }};
+platforms[1].dataset = {{ platform: "perfectworld" }};
 const run = {{ disabled: false }};
 global.document = {{
   activeElement: null,
   querySelector(selector) {{ return selector === "#run" ? run : null; }},
   querySelectorAll(selector) {{
     if (selector === "[data-analysis-mode]") return modes;
+    if (selector === "[data-platform]") return platforms;
     if (selector === "[data-playback-speed]") return [];
     return [];
   }},
@@ -202,11 +206,13 @@ if (!modes[1].classList.contains("active") ||
   throw new Error("fast mode click did not switch the pressed state");
 }}
 setAnalysisBusy(true);
-if (!run.disabled || modes.some(button => !button.disabled)) {{
+if (!run.disabled || modes.some(button => !button.disabled) ||
+    platforms.some(button => !button.disabled)) {{
   throw new Error("analysis controls stayed enabled while running");
 }}
 setAnalysisBusy(false);
-if (run.disabled || modes.some(button => button.disabled)) {{
+if (run.disabled || modes.some(button => button.disabled) ||
+    platforms.some(button => button.disabled)) {{
   throw new Error("analysis controls did not unlock after completion");
 }}
 """

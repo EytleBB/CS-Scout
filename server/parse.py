@@ -255,30 +255,39 @@ def _landing_index(arc):
             last_moving = i
     return last_moving
 
+def parse_demo_with_context(path, target_steamid):
+    """Parse replay data and retain context reusable by combat statistics."""
+    from demoparser2 import DemoParser
+
+    p = DemoParser(path)
+    evts = dict(p.parse_events(
+        ["round_freeze_end", "round_announce_match_start", "round_end", "player_death"],
+        other=["tick"],
+    ))
+    rounds = get_round_table(evts)
+    if not rounds:
+        log.warning("parse_demo failed %s: no valid round table", path)
+        return [], p, evts, []
+    classified = classify_rounds(p, rounds, {str(target_steamid)})
+    positions = parse_positions(p, classified, target_steamid)
+    nades = parse_grenades_for_rounds(p, classified, target_steamid)
+    deaths = parse_deaths_for_rounds(evts, classified, target_steamid)
+    out = []
+    for r in positions:
+        out.append({"side": r["side"], "rtype": r["rtype"],
+                    "official_num": r["official_num"], "path": r["path"],
+                    "grenades": nades.get(r["official_num"], []),
+                    "death_t": deaths.get(r["official_num"])})
+    return out, p, evts, classified
+
+
 def parse_demo(path, target_steamid):
     """Full single-demo parse: returns merged per-round dicts with path+grenades."""
     try:
-        from demoparser2 import DemoParser
-
-        p = DemoParser(path)
-        evts = dict(p.parse_events(
-            ["round_freeze_end","round_announce_match_start","round_end","player_death"],
-            other=["tick"]))
-        rounds = get_round_table(evts)
-        if not rounds:
-            log.warning("parse_demo failed %s: no valid round table", path)
-            return []
-        classified = classify_rounds(p, rounds, {str(target_steamid)})
-        positions = parse_positions(p, classified, target_steamid)
-        nades = parse_grenades_for_rounds(p, classified, target_steamid)
-        deaths = parse_deaths_for_rounds(evts, classified, target_steamid)
-        out = []
-        for r in positions:
-            out.append({"side": r["side"], "rtype": r["rtype"],
-                        "official_num": r["official_num"], "path": r["path"],
-                        "grenades": nades.get(r["official_num"], []),
-                        "death_t": deaths.get(r["official_num"])})
-        return out
+        records, _parser, _events, _classified = parse_demo_with_context(
+            path, target_steamid
+        )
+        return records
     except Exception as exc:
         # A single malformed demo must not abort the pipeline for every player.
         log.warning("parse_demo failed %s: %s", path, exc)

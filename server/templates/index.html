@@ -3,7 +3,7 @@
 <head>
  <meta charset="utf-8">
  <meta name="viewport" content="width=device-width,initial-scale=1">
- <title>CS-Scout 2.0</title>
+ <title>CS-Scout 2.1</title>
  <link rel="icon" type="image/webp" href="{{ url_for('static', filename='logo.webp') }}?v=20260720">
  <style>
   :root {
@@ -119,14 +119,6 @@
     border: 1px solid rgba(255, 255, 255, .14);
     border-radius: 9px;
     box-shadow: 0 4px 14px rgba(0, 0, 0, .35);
-  }
-  .brand-copy { display: grid; gap: 1px; }
-  .brand span {
-    color: var(--text-color-secondary);
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: .14em;
-    text-transform: uppercase;
   }
   .global-controls {
     margin-left: auto;
@@ -259,7 +251,22 @@
   }
   .sidebar input:disabled,
   .sidebar select:disabled { cursor: not-allowed; opacity: .55; }
+  .sidebar input[readonly] {
+    cursor: default;
+    border-color: rgba(255, 255, 255, .11);
+    color: var(--text-color-primary);
+    opacity: 1;
+  }
   .player-inputs { display: grid; gap: 0; }
+  .platform-picker { margin-bottom: 18px; }
+  .platform-caption {
+    display: block;
+    margin-bottom: 7px;
+    color: var(--text-color-secondary);
+    font-size: 11px;
+    font-weight: 550;
+  }
+  .platform-toggle,
   .analysis-mode-toggle {
     width: 100%;
     margin-top: 5px;
@@ -270,6 +277,7 @@
     border-radius: 8px;
     background: rgba(0, 0, 0, .18);
   }
+  .platform-toggle button,
   .analysis-mode-toggle button {
     min-height: 36px;
     flex: 1 1 50%;
@@ -281,13 +289,26 @@
     font-weight: 700;
     transition: color .18s ease, background-color .18s ease, box-shadow .18s ease;
   }
+  .platform-toggle button:hover:not(:disabled),
   .analysis-mode-toggle button:hover:not(:disabled) { color: var(--text-color-primary); }
+  .platform-toggle button.active,
   .analysis-mode-toggle button.active {
     background: var(--text-color-primary);
     color: var(--accent-ink);
     box-shadow: 0 3px 10px rgba(0, 0, 0, .26);
   }
+  .platform-toggle button:disabled,
   .analysis-mode-toggle button:disabled { cursor: not-allowed; opacity: .55; }
+  .pwa-hint {
+    margin-top: 10px;
+    padding: 10px 11px;
+    border: 1px solid rgba(255, 255, 255, .08);
+    border-radius: 7px;
+    background: rgba(255, 255, 255, .035);
+    color: var(--text-color-secondary);
+    font-size: 11px;
+    line-height: 1.55;
+  }
   #run {
     width: 100%;
     min-height: 42px;
@@ -543,7 +564,7 @@
  <header class="app-header glass-panel">
   <div class="brand">
    <img class="brand-logo" src="/static/logo.webp" alt="">
-   <div class="brand-copy">CS-Scout <span>Replay intelligence · 2.0</span></div>
+   <div class="brand-copy">CS-Scout</div>
   </div>
   <div class="global-controls" aria-label="全局回放控制">
    <div class="speed-control">
@@ -563,14 +584,24 @@
  </header>
   <div class="layout app-container">
    <aside class="sidebar" aria-label="扫描设置">
+    <div class="platform-picker">
+     <span class="platform-caption">平台</span>
+     <div class="platform-toggle" role="group" aria-label="数据平台切换">
+      <button id="platform-5e" type="button" data-platform="5e" class="active" aria-pressed="true">5E</button>
+      {% if local_mode %}
+      <button id="platform-perfectworld" type="button" data-platform="perfectworld" aria-pressed="false">完美平台</button>
+      {% endif %}
+     </div>
+    </div>
     <div class="form-section">
      <label for="map">地图</label>
     <select id="map" aria-label="地图"></select>
     <label for="depth">每人 Demo 数</label>
     <input id="depth" type="number" min="1" max="10" value="6">
+    <div id="pwa-hint" class="pwa-hint" hidden>匹配到对局后会自动填入对手；请确认名单，再点击开始分析。</div>
     </div>
-    <div class="form-section">
-     <label for="u0">5E 用户名</label>
+    <div id="platform-player-list" class="form-section">
+     <label id="player-input-label" for="u0">5E 用户名</label>
     <div class="player-inputs">
      <input id="u0" autocomplete="off" maxlength="64" placeholder="对手用户名 1">
      <input id="u1" autocomplete="off" maxlength="64" aria-label="对手用户名 2" placeholder="对手用户名 2">
@@ -579,12 +610,14 @@
      <input id="u4" autocomplete="off" maxlength="64" aria-label="对手用户名 5" placeholder="对手用户名 5">
      </div>
     </div>
-    <div class="form-section">
+    <div id="platform-actions" class="form-section">
      {% if not local_mode %}
+     <div data-five-e-only>
      <label for="key">分析密钥</label>
      <input id="key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false">
+     </div>
      {% endif %}
-     <div class="analysis-mode-toggle" role="group" aria-label="分析模式">
+     <div class="analysis-mode-toggle" data-five-e-only role="group" aria-label="分析模式">
       <button id="mode-normal" type="button" data-analysis-mode="normal" class="active" aria-label="普通模式，原有稳定流水线" aria-pressed="true" title="原有稳定流水线">普通</button>
       <button id="mode-fast" type="button" data-analysis-mode="fast" aria-label="快速模式，并行下载与解析" aria-pressed="false" title="并行下载与解析">快速</button>
      </div>
@@ -599,8 +632,8 @@
      <div id="empty-state" class="empty-state">
       <div class="empty-state-inner">
        <div class="map-placeholder" aria-hidden="true"><span class="map-placeholder-ring"></span></div>
-       <strong>等待扫描数据</strong>
-       <p>完成左侧设置并开始扫描后，这里会显示合并手枪局和每位玩家的 Buy 回放。</p>
+       <strong id="empty-title">等待扫描数据</strong>
+       <p id="empty-description">完成左侧设置并开始扫描后，这里会显示合并手枪局和每位玩家的 Buy 回放。</p>
       </div>
      </div>
      <div id="view-toolbar" class="view-toolbar" hidden>

@@ -127,6 +127,22 @@ foreach ($relativePath in @(
 )) {
     Assert-NonEmptyFile (Join-Path $root $relativePath) $relativePath
 }
+$perfectWorldRuntime = @(
+    "perfectworld_experiment\__init__.py",
+    "perfectworld_experiment\auto_scout.py",
+    "perfectworld_experiment\current_match.py",
+    "perfectworld_experiment\demo_io.py",
+    "perfectworld_experiment\native_signer.py",
+    "perfectworld_experiment\pipeline.py",
+    "perfectworld_experiment\pwa_client.py",
+    "perfectworld_experiment\pwa_protocol.py",
+    "perfectworld_experiment\requirements.txt",
+    "perfectworld_experiment\web_server.py",
+    "perfectworld_experiment\native\PwaSwapBridge.cs"
+)
+foreach ($relativePath in $perfectWorldRuntime) {
+    Assert-NonEmptyFile (Join-Path $root $relativePath) $relativePath
+}
 Assert-WebpFile (Join-Path $root "server\static\logo.webp") "server\static\logo.webp"
 
 $replayScript = Get-Content -LiteralPath (Join-Path $root "server\static\replay.js") -Raw
@@ -170,6 +186,16 @@ foreach ($relativePath in @(
 )) {
     Assert-True ($installScript -match [regex]::Escape($relativePath)) "Installer does not validate runtime asset: $relativePath"
 }
+foreach ($relativePath in $perfectWorldRuntime) {
+    Assert-True ($installScript -match [regex]::Escape($relativePath)) `
+        "Installer does not validate Perfect World runtime file: $relativePath"
+}
+Assert-True ($installScript -match 'perfectworld_experiment\\requirements\.txt') `
+    "Installer must install Perfect World dependencies."
+Assert-True ($startScript -match 'CS_SCOUT_PWA_DEMO_DIR') `
+    "Starter must place Perfect World Demo data outside the release directory."
+Assert-True ($startScript -match 'CS_SCOUT_PWA_OUTPUT_DIR') `
+    "Starter must place Perfect World output outside the release directory."
 foreach ($fileName in $replayIcons) {
     Assert-True ($installScript -match [regex]::Escape($fileName)) "Installer does not validate replay icon: $fileName"
 }

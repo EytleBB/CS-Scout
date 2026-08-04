@@ -23,6 +23,8 @@ import re
 import hmac
 import ipaddress
 import tempfile
+import sys
+from pathlib import Path
 
 from flask import Flask, abort, render_template, request, jsonify, send_from_directory
 from werkzeug.serving import make_server
@@ -44,8 +46,9 @@ SAFE_DOMAIN_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 MAX_USERNAME_LENGTH = 64
 CACHE_CONTROL_PATHS = frozenset({
     "/api/analyze", "/api/status", "/api/results",
+    "/api/pwa/status", "/api/pwa/config", "/api/pwa/analyze",
 })
-CACHE_CONTROL_PREFIXES = ("/api/player/", "/output/")
+CACHE_CONTROL_PREFIXES = ("/api/player/", "/api/pwa/player/", "/output/")
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 log = logging.getLogger("web")
@@ -64,6 +67,34 @@ state = {
     "mode": "normal",
 }
 state_lock = threading.Lock()
+
+_pwa_service = None
+_pwa_output_dir = None
+_pwa_service_lock = threading.Lock()
+
+
+def _get_pwa_service(*, start=True):
+    """Create the local Perfect World watcher only when that platform is used."""
+    global _pwa_service, _pwa_output_dir
+    with _pwa_service_lock:
+        if _pwa_service is None:
+            repository_root = str(Path(config.BASE_DIR).resolve().parent)
+            if repository_root not in sys.path:
+                sys.path.insert(0, repository_root)
+            from perfectworld_experiment.pipeline import DEFAULT_OUTPUT_DIR
+            from perfectworld_experiment.web_server import AutoScoutService
+
+            default_depth = os.getenv("CS_SCOUT_PWA_MAX_DEMOS", "6")
+            try:
+                max_demos = max(1, min(10, int(default_depth)))
+            except ValueError:
+                max_demos = 6
+            _pwa_service = AutoScoutService(max_demos=max_demos)
+            _pwa_output_dir = str(DEFAULT_OUTPUT_DIR)
+        service = _pwa_service
+    if start:
+        service.start()
+    return service
 
 
 def _must_not_cache(path):
@@ -261,6 +292,60 @@ def api_analyze():
 @app.route("/api/maps")
 def api_maps():
     return jsonify({"maps": maps.available_maps()})
+
+
+def _pwa_request_is_local():
+    """Perfect World state is desktop-local and must never be exposed remotely."""
+    if not (config.LOCAL_MODE and config.HOST in LOOPBACK_HOSTS):
+        return False
+    try:
+        return ipaddress.ip_address(request.remote_addr or "").is_loopback
+    except ValueError:
+        return False
+
+
+@app.route("/api/pwa/config", methods=["POST"])
+def api_pwa_config():
+    if not _pwa_request_is_local():
+        abort(404)
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Request body must be a JSON object"}), 400
+    raw_max_demos = data.get("max_demos", 6)
+    if isinstance(raw_max_demos, bool):
+        return jsonify({"error": "max_demos must be an integer"}), 400
+    try:
+        max_demos = int(raw_max_demos)
+    except (TypeError, ValueError, OverflowError):
+        return jsonify({"error": "max_demos must be an integer"}), 400
+    max_demos = max(1, min(10, max_demos))
+    service = _get_pwa_service(start=False)
+    configured = service.configure(max_demos=max_demos)
+    service.start()
+    return jsonify(configured), 409 if configured["busy"] else 200
+
+
+@app.route("/api/pwa/status")
+def api_pwa_status():
+    if not _pwa_request_is_local():
+        abort(404)
+    return jsonify(_get_pwa_service().snapshot())
+
+
+@app.route("/api/pwa/analyze", methods=["POST"])
+def api_pwa_analyze():
+    if not _pwa_request_is_local():
+        abort(404)
+    queued = _get_pwa_service().request_analysis()
+    return jsonify(queued), 200 if queued["accepted"] else 409
+
+
+@app.route("/api/pwa/player/<domain>")
+def api_pwa_player(domain):
+    if not _pwa_request_is_local() or not re.fullmatch(r"pwa_765\d{14}", domain):
+        abort(404)
+    _get_pwa_service()
+    return send_from_directory(_pwa_output_dir, f"player_{domain}.json")
 
 
 @app.route("/api/player/<domain>")

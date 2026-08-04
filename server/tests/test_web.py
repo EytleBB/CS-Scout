@@ -294,6 +294,102 @@ def test_index_contains_unified_replay_layout():
     assert html.index('id="view-switcher"') < html.index('id="side-ct"') < html.index('id="pistol"')
 
 
+def test_index_places_platform_switch_above_shared_map_controls(monkeypatch):
+    monkeypatch.setattr(web_server.config, "LOCAL_MODE", True)
+    html = web_server.app.test_client().get("/").get_data(as_text=True)
+
+    assert '<div class="brand-copy">CS-Scout</div>' in html
+    assert "Replay intelligence" not in html
+    assert '<span class="platform-caption">平台</span>' in html
+    assert 'id="platform-5e"' in html
+    assert 'id="platform-perfectworld"' in html
+    assert 'data-platform="5e" class="active" aria-pressed="true"' in html
+    assert html.index('id="platform-5e"') < html.index('id="map"')
+    assert 'id="player-input-label"' in html
+    assert 'id="platform-player-list"' in html
+    assert 'id="platform-actions"' in html
+    assert 'data-five-e-only' in html
+    assert 'id="pwa-hint"' in html
+
+
+def test_hosted_index_hides_desktop_only_perfectworld_switch(monkeypatch):
+    monkeypatch.setattr(web_server.config, "LOCAL_MODE", False)
+    html = web_server.app.test_client().get("/").get_data(as_text=True)
+
+    assert 'id="platform-5e"' in html
+    assert 'id="platform-perfectworld"' not in html
+
+
+def test_perfectworld_routes_are_disabled_outside_local_mode(monkeypatch):
+    monkeypatch.setattr(web_server.config, "LOCAL_MODE", False)
+
+    assert web_server.app.test_client().get("/api/pwa/status").status_code == 404
+
+
+def test_perfectworld_routes_share_the_main_app_and_stay_loopback_only(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(web_server.config, "LOCAL_MODE", True)
+    monkeypatch.setattr(web_server.config, "HOST", "127.0.0.1")
+    output_dir = tmp_path / "pwa-output"
+    output_dir.mkdir()
+    domain = "pwa_76561198000000000"
+    payload = {"username": "Opponent", "rounds": []}
+    (output_dir / f"player_{domain}.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+
+    class FakeService:
+        def __init__(self):
+            self.started = 0
+            self.max_demos = 6
+
+        def start(self):
+            self.started += 1
+
+        def snapshot(self):
+            return {
+                "platform": "perfectworld", "phase": "waiting",
+                "message": "waiting", "results": [], "failed": [],
+            }
+
+        def configure(self, *, max_demos):
+            self.max_demos = max_demos
+            return {"max_demos": max_demos, "busy": False}
+
+        def request_analysis(self):
+            return {"accepted": True, "phase": "queued"}
+
+    service = FakeService()
+    monkeypatch.setattr(web_server, "_pwa_service", service)
+    monkeypatch.setattr(web_server, "_pwa_output_dir", str(output_dir))
+    client = web_server.app.test_client()
+
+    configured = client.post("/api/pwa/config", json={"max_demos": 4})
+    assert configured.status_code == 200
+    assert configured.get_json() == {"max_demos": 4, "busy": False}
+    assert service.max_demos == 4
+
+    status = client.get("/api/pwa/status")
+    assert status.status_code == 200
+    assert status.get_json()["platform"] == "perfectworld"
+    assert status.headers["Cache-Control"] == "no-store"
+
+    analyze = client.post("/api/pwa/analyze")
+    assert analyze.status_code == 200
+    assert analyze.get_json() == {"accepted": True, "phase": "queued"}
+
+    player = client.get(f"/api/pwa/player/{domain}")
+    assert player.status_code == 200
+    assert player.get_json() == payload
+    assert player.headers["Cache-Control"] == "no-store"
+
+    remote = client.get(
+        "/api/pwa/status", environ_base={"REMOTE_ADDR": "203.0.113.10"}
+    )
+    assert remote.status_code == 404
+
+
 def test_frontend_registers_button_switched_replay_views():
     c = web_server.app.test_client()
     response = c.get("/static/app.js")
@@ -307,6 +403,10 @@ def test_frontend_registers_button_switched_replay_views():
     assert 'requestProtectedJSON("/api/analyze"' in source
     assert 'requestJSON("/api/status")' in source
     assert 'requestJSON(`/api/player/${encodeURIComponent(domain)}`' in source
+    assert 'requestJSON("/api/pwa/status")' in source
+    assert 'requestJSON(`/api/pwa/player/${encodeURIComponent(domain)}`' in source
+    assert 'requestJSON("/api/pwa/config"' in source
+    assert 'requestJSON("/api/pwa/analyze"' in source
     assert 'else if (publicMonitoringEnabled) schedulePoll(epoch, 5000)' in source
     assert 'void poll(pollEpoch)' in source
 
