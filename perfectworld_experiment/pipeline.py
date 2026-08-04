@@ -128,8 +128,7 @@ def _parse_player_output(
     demos_found: int,
 ) -> tuple[int, dict[str, object] | None, dict[str, str] | None]:
     """Picklable worker: parse one player's demos and write its final JSON."""
-    combat, maps, parse, player_json = _load_cs_scout_modules()
-    maps.load_map(normalized_map)
+    combat, _maps, parse, player_json = _load_cs_scout_modules()
     rounds: list[dict] = []
     parsed_stats: list[dict] = []
     parsed_demo_count = 0
