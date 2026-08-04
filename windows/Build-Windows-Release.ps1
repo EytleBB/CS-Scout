@@ -2,7 +2,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$Version = "2.0.2",
+    [string]$Version = "2.1.0",
     [string]$ProjectRoot = "",
     [string]$OutputDirectory = ""
 )
@@ -10,7 +10,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$ExpectedReleaseVersion = "2.0.2"
+$ExpectedReleaseVersion = "2.1.0"
 $ExpectedMaps = @(
     "de_ancient", "de_anubis", "de_dust2", "de_inferno",
     "de_mirage", "de_nuke", "de_overpass", "de_train"
@@ -196,6 +196,15 @@ function Assert-RuntimeRequirements([string]$Path) {
         "gunicorn must remain excluded on Windows by an environment marker."
 }
 
+function Assert-PerfectWorldRequirements([string]$Path) {
+    $lines = @([System.IO.File]::ReadAllLines($Path, $Utf8NoBom) | ForEach-Object {
+        $_.Trim()
+    } | Where-Object { $_ -and -not $_.StartsWith("#") })
+    Assert-True ($lines.Count -eq 1) "Perfect World runtime must have one direct dependency."
+    Assert-True ($lines[0] -ceq "cryptography==46.0.7") `
+        "Perfect World cryptography dependency must remain pinned to 46.0.7."
+}
+
 function Assert-AllowedRelativePath([string]$RelativePath) {
     $path = $RelativePath.Replace("\", "/")
     $forbiddenSegmentPattern = '(?i)(^|/)(?:\.git|\.github|\.venv|venv|__pycache__|tests?|deploy|tools|docs|demos_opponents|output|\.pytest[^/]*)(?:/|$)'
@@ -315,14 +324,15 @@ function Assert-StagedRuntimeIntegrity([string]$PackageRoot, [string]$ArchiveNam
     $readmePath = Join-Path $PackageRoot "README.md"
     $playerReadmePath = Join-Path $PackageRoot "windows\README-PLAYER-ZH.md"
     $indexPath = Join-Path $PackageRoot "server\templates\index.html"
-    Assert-True ((Read-Utf8Text $readmePath) -match '(?m)^# CS-Scout 2\.0\r?$') `
-        "Staged README.md does not identify the 2.0 release line."
+    Assert-True ((Read-Utf8Text $readmePath) -match '(?m)^# CS-Scout 2\.1\r?$') `
+        "Staged README.md does not identify the 2.1 release line."
     Assert-True ((Read-Utf8Text $playerReadmePath).Contains($ArchiveName)) `
         "Staged Windows player guide does not name the expected release archive."
-    Assert-True ((Read-Utf8Text $indexPath).Contains("<title>CS-Scout 2.0</title>")) `
-        "Staged Web UI title does not identify CS-Scout 2.0."
+    Assert-True ((Read-Utf8Text $indexPath).Contains("<title>CS-Scout 2.1</title>")) `
+        "Staged Web UI title does not identify CS-Scout 2.1."
 
     Assert-RuntimeRequirements (Join-Path $PackageRoot "server\requirements-runtime.txt")
+    Assert-PerfectWorldRequirements (Join-Path $PackageRoot "perfectworld_experiment\requirements.txt")
     Assert-WebPFile (Join-Path $PackageRoot "server\static\logo.webp")
     foreach ($mapName in $ExpectedMaps) {
         Assert-MapMetadata `
@@ -576,17 +586,21 @@ try {
     foreach ($path in @($rootReadme, $playerReadme, $indexTemplate)) {
         Assert-True (Test-Path -LiteralPath $path -PathType Leaf) "Version validation file is missing: $path"
     }
-    Assert-True ((Read-Utf8Text $rootReadme) -match '(?m)^# CS-Scout 2\.0\r?$') `
-        "README.md does not identify the 2.0 release line."
+    Assert-True ((Read-Utf8Text $rootReadme) -match '(?m)^# CS-Scout 2\.1\r?$') `
+        "README.md does not identify the 2.1 release line."
     Assert-True ((Read-Utf8Text $playerReadme).Contains($archiveName)) `
         "Windows player guide does not name the expected release archive: $archiveName"
-    Assert-True ((Read-Utf8Text $indexTemplate).Contains("<title>CS-Scout 2.0</title>")) `
-        "Web UI title does not identify CS-Scout 2.0."
+    Assert-True ((Read-Utf8Text $indexTemplate).Contains("<title>CS-Scout 2.1</title>")) `
+        "Web UI title does not identify CS-Scout 2.1."
 
     $requirementsPath = Join-Path $sourceRoot "server\requirements-runtime.txt"
     Assert-True (Test-Path -LiteralPath $requirementsPath -PathType Leaf) `
         "Pinned runtime requirements are missing: $requirementsPath"
     Assert-RuntimeRequirements $requirementsPath
+    $perfectWorldRequirementsPath = Join-Path $sourceRoot "perfectworld_experiment\requirements.txt"
+    Assert-True (Test-Path -LiteralPath $perfectWorldRequirementsPath -PathType Leaf) `
+        "Pinned Perfect World requirements are missing: $perfectWorldRequirementsPath"
+    Assert-PerfectWorldRequirements $perfectWorldRequirementsPath
 
     foreach ($mapName in $ExpectedMaps) {
         $metaPath = Join-Path $sourceRoot "server\data\maps\$mapName\meta.json"
@@ -602,7 +616,7 @@ try {
     $requiredFiles = @(
         "LICENSE",
         "README.md",
-        "RELEASE_NOTES_v2.0.2.md",
+        "RELEASE_NOTES_v2.1.0.md",
         "SECURITY.md",
         "THIRD_PARTY_NOTICES.md",
         "windows\Install-CS-Scout.cmd",
@@ -623,7 +637,18 @@ try {
         "server\static\app.js",
         "server\static\logo.webp",
         "server\static\replay.js",
-        "server\templates\index.html"
+        "server\templates\index.html",
+        "perfectworld_experiment\__init__.py",
+        "perfectworld_experiment\auto_scout.py",
+        "perfectworld_experiment\current_match.py",
+        "perfectworld_experiment\demo_io.py",
+        "perfectworld_experiment\native_signer.py",
+        "perfectworld_experiment\pipeline.py",
+        "perfectworld_experiment\pwa_client.py",
+        "perfectworld_experiment\pwa_protocol.py",
+        "perfectworld_experiment\requirements.txt",
+        "perfectworld_experiment\web_server.py",
+        "perfectworld_experiment\native\PwaSwapBridge.cs"
     )
     foreach ($relativePath in $requiredFiles) {
         Copy-ReleaseFile $sourceRoot $packageRoot $relativePath $expectedRelativePaths

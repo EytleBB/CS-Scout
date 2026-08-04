@@ -262,6 +262,34 @@ def test_cleanup_counts_transients_and_honors_minimum_free_space(
     assert archive.exists()
 
 
+def test_task_start_trims_cache_at_target_before_hard_limit(
+    monkeypatch, tmp_path
+):
+    demo_dir = tmp_path / "demos"
+    demo_dir.mkdir()
+    old_demo = demo_dir / "old.dem"
+    new_demo = demo_dir / "new.dem"
+    old_demo.write_bytes(b"a" * 8)
+    new_demo.write_bytes(b"b" * 8)
+    os.utime(old_demo, (1, 1))
+    os.utime(new_demo, (2, 2))
+
+    gib = 1024 ** 3
+    monkeypatch.setattr(config, "DEMO_DIR", str(demo_dir))
+    monkeypatch.setattr(config, "DEMO_CACHE_LIMIT_GB", 16 / gib)
+    monkeypatch.setattr(config, "DEMO_CACHE_TARGET_GB", 10 / gib)
+    monkeypatch.setattr(config, "DEMO_MIN_FREE_GB", 0)
+    monkeypatch.setattr(pipeline, "_disk_free_bytes", lambda path: gib)
+
+    budget = pipeline._begin_task_storage()
+    try:
+        assert not old_demo.exists()
+        assert new_demo.exists()
+        assert pipeline._demo_storage_size(str(demo_dir)) <= 10
+    finally:
+        pipeline._finish_task_storage(budget)
+
+
 def test_task_download_budget_reservations_are_concurrent_safe(
     monkeypatch, tmp_path
 ):

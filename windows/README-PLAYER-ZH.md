@@ -15,9 +15,9 @@
 ## 二、下载和安装
 
 1. 在 GitHub Releases 页面下载名称类似
-   `CS-Scout-Windows-x64-v2.0.2.zip` 的 Windows 发布包。
+   `CS-Scout-Windows-x64-v2.1.0.zip` 的 Windows 发布包。
 2. 同时下载 `SHA256SUMS.txt`，在 ZIP 所在目录运行
-   `Get-FileHash -Algorithm SHA256 .\CS-Scout-Windows-x64-v2.0.2.zip`，确认结果与
+   `Get-FileHash -Algorithm SHA256 .\CS-Scout-Windows-x64-v2.1.0.zip`，确认结果与
    校验文件中的 64 位散列完全相同；不同就不要运行。
 3. 不要下载 GitHub 自动生成的 `Source code (zip)` 或 `Source code (tar.gz)`；它们可能不含雷达地图。
 4. 右键 ZIP，选择“全部解压”。不要直接在压缩包预览窗口里运行程序。
@@ -37,8 +37,9 @@
 1. 双击 `windows\Start-CS-Scout.cmd`。
 2. 启动窗口会显示本次使用的 `Address`，并自动打开这个地址。端口由 Windows 分配，
    所以不同电脑或不同启动次数显示的数字可能不同，这是正常现象。
-3. 本机页面不会显示分析密钥框，直接填写玩家并点击“开始扫描”即可。
-4. 第一次使用建议选择“普通”模式、一名玩家和一个 Demo 进行测试。
+3. 5E 模式不会显示分析密钥框，直接填写玩家并点击“开始扫描”即可。
+4. 完美平台模式需要先安装并登录完美世界竞技平台。进入匹配对局后，CS-Scout 会自动显示地图和 5 名对手；确认名单后点击“开始分析”，不需要手动输入用户名或 Token。
+5. 第一次使用建议选择一名玩家和一个 Demo 进行测试。
 5. 使用期间保持黑色启动窗口打开。
 
 如果 Windows 防火墙首次弹出“允许访问”提示，可以选择“取消”或不允许；本机
@@ -53,7 +54,8 @@
 ```text
 %LOCALAPPDATA%\CS-Scout\
 ├─ demos\        已下载的 Demo 缓存
-└─ output\       最近分析生成的 JSON
+├─ output\       最近的 5E 分析 JSON
+└─ perfectworld\ 完美平台 Demo 缓存与分析 JSON
 ```
 
 需要释放磁盘时，先停止 CS-Scout，再删除 `demos` 目录中的缓存文件。不要在分析过程中删除文件。

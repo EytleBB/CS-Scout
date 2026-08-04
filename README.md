@@ -1,16 +1,16 @@
-# CS-Scout 2.0
+# CS-Scout 2.1
 
-> 面向 CS2 赛前准备的 5E Demo 分析与多回合浏览器回放工具。
+> 面向 CS2 赛前准备的 5E / 完美平台 Demo 分析与多回合浏览器回放工具。
 
-CS-Scout 输入最多 5 个 5E 用户名和一张地图，自动检索、下载并解析历史
-Demo，然后把每名玩家的移动路径、投掷物和死亡时间输出为 JSON。浏览器使用
+5E 模式输入最多 5 个用户名和一张地图；完美平台模式在进入对局后自动识别
+地图与对手。两种模式都会检索、下载并解析历史 Demo，然后把每名玩家的移动路径、投掷物和死亡时间输出为 JSON。浏览器使用
 Canvas 将多个回合叠加为同步回放，不在服务器端渲染热力图。
 
 ## Windows 玩家下载版
 
 普通玩家不需要部署服务器。请从
 [GitHub Releases](https://github.com/EytleBB/CS-Scout/releases/latest) 下载名称类似
-`CS-Scout-Windows-x64-v2.0.2.zip` 的独立 Windows 发布包，完整解压后依次双击：
+`CS-Scout-Windows-x64-v2.1.0.zip` 的独立 Windows 发布包，完整解压后依次双击：
 
 1. `windows\Install-CS-Scout.cmd`：创建独立 Python 环境并安装固定版本依赖；
 2. `windows\Start-CS-Scout.cmd`：启动仅本机可访问的服务并打开浏览器，无需输入密钥。
@@ -24,7 +24,8 @@ Canvas 将多个回合叠加为同步回放，不在服务器端渲染热力图�
 
 ## 主要功能
 
-- 最多同时分析 5 名 5E 玩家，每人可选 1–10 场 Demo。
+- 左侧栏可直接切换“5E / 完美平台”，两种平台共用同一套回放界面。
+- 5E 支持手动输入最多 5 名玩家；完美平台匹配到对局后自动识别地图和 5 名对手，以只读用户名供用户确认，再点击“开始分析”，无需手动输入用户名或 Token。每人可选 1–10 场 Demo。
 - 支持 CT/T 全局切换、统一播放/暂停、可拖动时间轴，以及 1x / 2x / 4x 播放速度（默认 2x）。
 - 回放区顶部用“手枪局（全员）”和各玩家用户名按钮切换，CT/T 固定在选择栏右侧；用户名按钮显示该玩家
   的 Buy 回合，任一时刻只显示一个完整雷达。
@@ -43,17 +44,16 @@ Canvas 将多个回合叠加为同步回放，不在服务器端渲染热力图�
 
 ```text
 浏览器（templates/index.html + static/app.js + static/replay.js）
-    │ POST /api/analyze（mode: normal | fast，默认 normal）
+    │ 平台切换
     ▼
 Flask（server/web_server.py）
-    ├─ 普通：pipeline.run(...)
-    │    └─ 原有生产者/消费者流水线
-    └─ 快速：pipeline.run_fast(...)
-         ├─ 并行玩家发现 + 并发 Demo 下载
-         └─ ProcessPool 并行解析
+    ├─ 5E：POST /api/analyze
+    │    ├─ 普通：pipeline.run(...)
+    │    └─ 快速：pipeline.run_fast(...)
+    └─ 完美：/api/pwa/*
+         └─ 按需启动本地对局监听 → 自动识别对手 → 用户确认 → 历史 Demo 分析
     ▼
-server/output/player_<domain>.json
-server/output/analysis_summary.json
+两种平台各自保存输出，共用 ReplayPlayer 浏览器渲染
 ```
 
 主要模块：
@@ -67,6 +67,7 @@ server/output/analysis_summary.json
 | `server/player_json.py` | 生成浏览器消费的玩家 JSON |
 | `server/maps.py` | 地图元数据加载与游戏坐标转换 |
 | `server/web_server.py` | Flask API 和静态资源路由 |
+| `perfectworld_experiment/` | 完美平台本地对局识别、官方通信、Demo 下载与自动侦察 |
 
 `tools/` 中保留了 1.0 的离线热力图、路径查看、地图校准和区域编辑工具；
 它们不参与 2.0 的 Web 服务流程。
@@ -85,6 +86,9 @@ source .venv/bin/activate
 # .\.venv\Scripts\Activate.ps1
 
 pip install -r server/requirements.txt
+
+# 需要使用完美平台时再安装
+pip install -r perfectworld_experiment/requirements.txt
 ```
 
 首次部署需要准备雷达图和坐标变换：
@@ -129,6 +133,8 @@ $env:CS_SCOUT_SECRET_KEY='replace-with-a-random-secret'
 | `CS_SCOUT_DEMO_MIN_FREE_GB` | Demo 文件系统最低保留空间 | 8 GB |
 | `CS_SCOUT_DEMO_TASK_DOWNLOAD_LIMIT_GB` | 单次分析累计下载上限 | 12 GB |
 | `CS_SCOUT_DEMO_REQUIRE_PUBLIC_DNS` | 是否拒绝解析到私网地址的 CDN DNS；国内加速环境谨慎开启 | `false` |
+
+完美平台自动分析使用独立的并发边界：历史查询默认 5 线程、Demo 下载默认 6 线程、解析默认最多 2 个进程。解析进程会根据当时可用物理内存自动降为 1，避免与 CS2 争抢内存。可分别通过 `CS_SCOUT_PWA_DISCOVERY_WORKERS`、`CS_SCOUT_PWA_DOWNLOAD_WORKERS` 和 `CS_SCOUT_PWA_PARSE_WORKERS` 调整。
 
 ## Ubuntu 24.04 生产部署
 

@@ -5,6 +5,7 @@ __pycache__/
 *.pyd
 venv/
 .venv/
+.pwa-venv/
 *.egg-info/
 .pytest_cache/
 .pytest-tmp*/
@@ -21,6 +22,9 @@ demos_analysis/
 
 # Output images & summaries (generated)
 server/output/
+perfectworld_experiment/demos/
+perfectworld_experiment/output/
+perfectworld_experiment/native/bin/
 
 # Generated map data (run setup_maps.py to regenerate)
 server/data/maps/
@@ -40,6 +44,8 @@ server/data/maps/
 # Internal tooling
 .superpowers/
 .worktrees/
+.codex-remote-attachments/
+.release-verify-*/
 /AGENTS.md
 
 # Locally built release assets (uploaded to GitHub Releases, not committed)

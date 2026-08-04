@@ -1,0 +1,3 @@
+# Kept separate from server/requirements-runtime.txt so the stable 5E runtime
+# remains unchanged. No third-party Perfect World downloader is used.
+cryptography==46.0.7

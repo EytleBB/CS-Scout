@@ -26,6 +26,15 @@ def _parse_combat_stats(path, steamid):
         log.warning(f"combat parse failed {path}: {e}")
         return None
 
+    return parse_combat_stats_from_context(p, evts, sid)
+
+
+def parse_combat_stats_from_context(parser, events, steamid, classified=None):
+    """Calculate combat stats from an existing DemoParser/event pass."""
+    p = parser
+    evts = events
+    sid = str(steamid)
+
     kd_val = 0.0
     re_df = evts.get("round_end")
     if re_df is not None:
@@ -43,8 +52,9 @@ def _parse_combat_stats(path, steamid):
             except Exception as e:
                 log.warning(f"scoreboard parse failed {path}: {e}")
 
-    rounds = parse.get_round_table(evts)
-    classified = parse.classify_rounds(p, rounds, {sid}) if rounds else []
+    if classified is None:
+        rounds = parse.get_round_table(evts)
+        classified = parse.classify_rounds(p, rounds, {sid}) if rounds else []
     # The economy filter is deliberately not applied here: the denominator is
     # every round the player participated in, on both CT and T.
     played = [r for r in classified if r.get("side") in {"CT", "T"}]

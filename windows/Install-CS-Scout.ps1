@@ -116,6 +116,22 @@ function Assert-Package([string]$Root) {
     foreach ($relativePath in $runtimeAssets) {
         Assert-NonEmptyFile (Join-Path $Root $relativePath) $relativePath
     }
+    $perfectWorldRuntime = @(
+        "perfectworld_experiment\__init__.py",
+        "perfectworld_experiment\auto_scout.py",
+        "perfectworld_experiment\current_match.py",
+        "perfectworld_experiment\demo_io.py",
+        "perfectworld_experiment\native_signer.py",
+        "perfectworld_experiment\pipeline.py",
+        "perfectworld_experiment\pwa_client.py",
+        "perfectworld_experiment\pwa_protocol.py",
+        "perfectworld_experiment\requirements.txt",
+        "perfectworld_experiment\web_server.py",
+        "perfectworld_experiment\native\PwaSwapBridge.cs"
+    )
+    foreach ($relativePath in $perfectWorldRuntime) {
+        Assert-NonEmptyFile (Join-Path $Root $relativePath) $relativePath
+    }
     Assert-WebpFile `
         (Join-Path $Root "server\static\logo.webp") `
         "server\static\logo.webp"
@@ -367,11 +383,13 @@ try {
     Assert-LastExitCode "Updating pip"
     & $venvPython -m pip install --requirement (Join-Path $projectRoot "server\requirements-runtime.txt")
     Assert-LastExitCode "Installing dependencies"
+    & $venvPython -m pip install --requirement (Join-Path $projectRoot "perfectworld_experiment\requirements.txt")
+    Assert-LastExitCode "Installing Perfect World dependencies"
 
     Write-Step "Checking the installation"
     & $venvPython -m pip check
     Assert-LastExitCode "Checking installed dependencies"
-    & $venvPython -c "import flask, requests, pandas, numpy, demoparser2; print('Runtime imports: OK')"
+    & $venvPython -c "import cryptography, flask, requests, pandas, numpy, demoparser2, perfectworld_experiment.web_server; print('Runtime imports: OK')"
     Assert-LastExitCode "Importing runtime packages"
 
     Write-Host "`nInstallation is ready." -ForegroundColor Green

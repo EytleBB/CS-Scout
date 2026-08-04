@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CS Scout · 完美平台自动版</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <div>
+      <p class="eyebrow">CS SCOUT · PERFECT WORLD</p>
+      <h1>进游戏，自动侦察</h1>
+    </div>
+    <div class="status-pill" id="phase">等待对局</div>
+  </header>
+
+  <main>
+    <section class="status-card">
+      <div class="pulse" id="pulse"></div>
+      <div>
+        <h2 id="message">正在读取完美平台状态…</h2>
+        <p id="detail">无需输入用户名。进入一场完美平台对局后，会自动识别对手并分析其历史 Demo。</p>
+      </div>
+      <button id="start-analysis" type="button" disabled>开始分析</button>
+    </section>
+
+    <section class="controls" aria-label="回放筛选">
+      <div class="switch-group">
+        <button class="active" data-side="CT">CT</button>
+        <button data-side="T">T</button>
+      </div>
+      <div class="switch-group">
+        <button class="active" data-rtype="Buy">长枪局</button>
+        <button data-rtype="Pistol">手枪局</button>
+      </div>
+      <div class="switch-group">
+        <button data-speed="1">1×</button>
+        <button class="active" data-speed="2">2×</button>
+        <button data-speed="4">4×</button>
+      </div>
+    </section>
+
+    <nav id="players" class="players" aria-label="已识别对手"></nav>
+    <section id="viewer" class="viewer empty">
+      <p>进入对局后，侦察结果会自动出现在这里。</p>
+    </section>
+    <section id="failed" class="failed" hidden></section>
+  </main>
+
+  <script src="/core/replay.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

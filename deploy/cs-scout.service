@@ -1,5 +1,5 @@
 [Unit]
-Description=CS-Scout 2.0 web and demo analysis service
+Description=CS-Scout 2.1 web and demo analysis service
 Documentation=https://github.com/ORG/CS_Scout
 Wants=network-online.target
 After=network-online.target
