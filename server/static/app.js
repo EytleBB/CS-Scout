@@ -41,10 +41,7 @@ const clock = { elapsed: 0, playing: true, speed: 2, last: null, raf: null };
 
 
 function localDemoReady() {
-  const select = $("#local-demo-player");
-  return activePlatform === "localdemos" && Boolean(
-    localDemoSessionId && select && select.value
-  );
+  return activePlatform === "localdemos" && Boolean(localDemoSessionId);
 }
 
 function formatBytes(bytes) {
@@ -77,15 +74,6 @@ function updateLocalDemoRunButton() {
 function resetLocalDemoState() {
   localDemoSessionId = "";
   localDemoPlayers = [];
-  const select = $("#local-demo-player");
-  if (select) {
-    select.replaceChildren();
-    const option = document.createElement("option");
-    option.value = "";
-    option.textContent = "Inspect Demos first";
-    select.appendChild(option);
-    select.disabled = true;
-  }
   const info = $("#local-demo-info");
   if (info) info.hidden = true;
   const map = $("#local-demo-map");
@@ -159,8 +147,6 @@ function setAnalysisBusy(busy) {
   if (fileInput) fileInput.disabled = disabled;
   const inspectButton = $("#local-demo-inspect");
   if (inspectButton) inspectButton.disabled = disabled || localDemoFiles.length === 0;
-  const playerSelect = $("#local-demo-player");
-  if (playerSelect) playerSelect.disabled = disabled || !localDemoSessionId || !localDemoPlayers.length;
   updateLocalDemoRunButton();
 }
 
@@ -400,8 +386,6 @@ function wireControls() {
   }
   const localInspectButton = $("#local-demo-inspect");
   if (localInspectButton) localInspectButton.addEventListener("click", () => { void inspectLocalDemos(); });
-  const localPlayerSelect = $("#local-demo-player");
-  if (localPlayerSelect) localPlayerSelect.addEventListener("change", updateLocalDemoRunButton);
   setPlaybackSpeed(clock.speed);
   setAnalysisMode(analysisMode);
   updatePlatformControls();
@@ -623,21 +607,9 @@ async function inspectLocalDemos() {
     localDemoPlayers = Array.isArray(data.players) ? data.players : [];
     updateLocalDemoFileList(Array.isArray(data.files) ? data.files : null);
     const map = $("#local-demo-map");
-    if (map) map.textContent = `Map: ${String(data.map || "unknown")} ? ${localDemoFiles.length} files`;
+    if (map) map.textContent = `Map: ${String(data.map || "unknown")} — ${localDemoFiles.length} files, ${localDemoPlayers.length} common players`;
     const info = $("#local-demo-info");
     if (info) info.hidden = false;
-    const select = $("#local-demo-player");
-    if (select) {
-      select.replaceChildren();
-      for (const player of localDemoPlayers) {
-        const option = document.createElement("option");
-        option.value = String(player.steamid || "");
-        option.textContent = `${String(player.username || player.steamid)} (${String(player.steamid)})`;
-        select.appendChild(option);
-      }
-      select.value = localDemoPlayers.length === 1 ? String(localDemoPlayers[0].steamid) : "";
-      select.disabled = localDemoPlayers.length === 0;
-    }
     updateLocalDemoRunButton();
     setStatus(`Demo inspection complete: ${localDemoPlayers.length} common players found.`);
   } catch (error) {
@@ -649,9 +621,8 @@ async function inspectLocalDemos() {
 }
 
 async function runLocalDemoAnalysis() {
-  const select = $("#local-demo-player");
-  if (!localDemoReady() || !select) {
-    setStatus("Inspect the Demos and select a common player first.");
+  if (!localDemoReady()) {
+    setStatus("Inspect the Demos first.");
     return;
   }
   setAnalysisBusy(true);
@@ -659,7 +630,7 @@ async function runLocalDemoAnalysis() {
     await requestJSON("/api/local-demos/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: localDemoSessionId, steamid: select.value })
+      body: JSON.stringify({ session_id: localDemoSessionId })
     });
     lastKnownAnalysisRunning = true;
     pollEpoch += 1;

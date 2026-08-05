@@ -589,7 +589,6 @@ const elements = {
   "#local-demo-inspect": element(),
   "#local-demo-info": element(),
   "#local-demo-map": element(),
-  "#local-demo-player": element(),
   "#run": element(),
   "#status": element(),
   "#failed": element(),
@@ -609,7 +608,7 @@ const requests = [];
 global.fetch = async (url, options = {}) => {
   requests.push({ url, options });
   if (url === "/api/status") return { ok: true, status: 200, async json() { return { status: "idle", message: "", results: [], failed: [] }; } };
-  if (url === "/api/local-demos/inspect") return { ok: true, status: 200, async json() { return { session_id: "a".repeat(32), map: "de_nuke", files: [{ name: "one.dem", size: 10 }, { name: "two.dem", size: 20 }], players: [{ steamid: "76561198146001127", username: "L4n", appearances: 2 }] }; } };
+  if (url === "/api/local-demos/inspect") return { ok: true, status: 200, async json() { return { session_id: "a".repeat(32), map: "de_nuke", files: [{ name: "one.dem", size: 10 }, { name: "two.dem", size: 20 }], players: [{ steamid: "76561198146001127", username: "L4n", appearances: 2 }, { steamid: "76561198000000001", username: "Other", appearances: 2 }] }; } };
   if (url === "/api/local-demos/analyze") return { ok: true, status: 200, async json() { return { status: "started", source: "local_demos" }; } };
   throw new Error("unexpected request " + url);
 };
@@ -619,11 +618,11 @@ global.fetch = async (url, options = {}) => {
   await inspectLocalDemos();
   if (requests[1].options.body.parts.length !== 2) throw new Error("two files were not appended to FormData");
   if (requests[1].options.headers) throw new Error("multipart request manually set Content-Type");
-  if (elements["#local-demo-player"].value !== "76561198146001127") throw new Error("common player was not selected");
   await runLocalDemoAnalysis();
   const analyzeRequest = requests.find(item => item.url === "/api/local-demos/analyze");
   const body = JSON.parse(analyzeRequest.options.body);
-  if (body.session_id !== "a".repeat(32) || body.steamid !== "76561198146001127") throw new Error("analyze payload is wrong");
+  if (body.session_id !== "a".repeat(32)) throw new Error("analyze payload missing session_id");
+  if (body.steamid !== undefined) throw new Error("analyze payload should not contain steamid");
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """ % json.dumps(os.path.abspath(APP_JS))
     result = subprocess.run(

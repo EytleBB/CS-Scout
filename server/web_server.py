@@ -395,36 +395,27 @@ def api_local_demos_analyze():
     if not isinstance(data, dict):
         return jsonify({"error": "Request body must be a JSON object"}), 400
     session_id = data.get("session_id")
-    steamid = data.get("steamid")
     if not isinstance(session_id, str) or not local_demo_pipeline.SESSION_ID_RE.fullmatch(session_id):
         return jsonify({"error": "Invalid local Demo session"}), 400
-    if not isinstance(steamid, str) or not re.fullmatch(r"\d{10,20}", steamid.strip()):
-        return jsonify({"error": "Invalid SteamID"}), 400
-    steamid = steamid.strip()
 
     try:
         manifest = local_demo_pipeline.load_manifest(session_id)
     except local_demo_pipeline.LocalDemoError as exc:
         return jsonify({"error": str(exc)}), 400
-    player = next(
-        (item for item in manifest.get("players", [])
-         if str(item.get("steamid", "")) == steamid),
-        None,
-    )
-    if player is None:
-        return jsonify({"error": "SteamID is not a common player in this session"}), 400
+    players = manifest.get("players", [])
+    if not players:
+        return jsonify({"error": "No common players in this session"}), 400
 
-    domain = f"local_{session_id}"
     with state_lock:
         if state["status"] == "running":
             return jsonify({"error": "Analysis already running"}), 409
         state.update({
             "status": "running",
             "message": "Starting local Demo analysis...",
-            "progress": [{"id": steamid, "step": 0, "msg": "Queued"}],
+            "progress": [],
             "results": [],
             "failed": [],
-            "total_players": 1,
+            "total_players": len(players),
             "max_demos": len(manifest["paths"]),
             "map": manifest["map"],
             "mode": "local_demos",
@@ -433,7 +424,7 @@ def api_local_demos_analyze():
         try:
             worker = threading.Thread(
                 target=_run_local_demo_analysis,
-                args=(session_id, manifest, player, domain),
+                args=(session_id, manifest, players),
                 daemon=True,
             )
             worker.start()
@@ -451,7 +442,6 @@ def api_local_demos_analyze():
     return jsonify({
         "status": "started",
         "source": "local_demos",
-        "domain": domain,
     })
 
 
@@ -614,67 +604,82 @@ def serve_icons(filename):
 
 # ── Background runner ─────────────────────────────────────────────────────────
 
-def _run_local_demo_analysis(session_id, manifest, player, domain):
-    steamid = str(player["steamid"])
-    username = str(player.get("username") or steamid)
+def _run_local_demo_analysis(session_id, manifest, players):
     demo_paths = list(manifest["paths"])
+    map_name = manifest["map"]
+    total_players = len(players)
+    all_results = []
+    all_failed = []
 
-    def progress_cb(index, total, message):
-        with state_lock:
-            state["message"] = f"[{index + 1}/{total}] {message}"
-            if state["progress"]:
-                state["progress"][0].update({"step": min(3, index + 1), "msg": message})
+    for player_index, player in enumerate(players):
+        steamid = str(player["steamid"])
+        username = str(player.get("username") or steamid)
+        domain = f"local_{steamid}"
 
-    try:
-        output_path = Path(config.OUTPUT_DIR) / f"player_{domain}.json"
-        summary = local_demo_pipeline.run_local_demos(
-            demo_paths,
-            steamid=steamid,
-            username=username,
-            domain=domain,
-            map_name=manifest["map"],
-            output_path=output_path,
-            progress_cb=progress_cb,
-        )
-        result = {
-            "username": username,
-            "domain": domain,
-            "player_json": f"/output/player_{domain}.json",
-            "combat_stats": summary["combat_stats"],
-            "demos_found": len(demo_paths),
-            "round_count": summary["total_rounds"],
-        }
-        saved_summary = {
-            "map": manifest["map"],
-            "max_demos": len(demo_paths),
-            "mode": "local_demos",
-            "source": "local_demos",
-            "failed": [],
-            "results": [result],
-        }
-        pipeline._write_json_atomic(
-            os.path.join(config.OUTPUT_DIR, "analysis_summary.json"),
-            saved_summary,
-            ensure_ascii=False,
-            indent=2,
-        )
-        with state_lock:
+        def progress_cb(index, total, message, _pi=player_index, _pu=username):
+            with state_lock:
+                state["message"] = f"[{_pi + 1}/{total_players}] {_pu}: {message}"
+                state["progress"] = [{
+                    "id": steamid,
+                    "step": min(3, index + 1),
+                    "msg": message,
+                }]
+
+        try:
+            output_path = Path(config.OUTPUT_DIR) / f"player_{domain}.json"
+            summary = local_demo_pipeline.run_local_demos(
+                demo_paths,
+                steamid=steamid,
+                username=username,
+                domain=domain,
+                map_name=map_name,
+                output_path=output_path,
+                progress_cb=progress_cb,
+            )
+            result = {
+                "username": username,
+                "domain": domain,
+                "player_json": f"/output/player_{domain}.json",
+                "combat_stats": summary["combat_stats"],
+                "demos_found": len(demo_paths),
+                "round_count": summary["total_rounds"],
+            }
+            all_results.append(result)
+            with state_lock:
+                state["results"] = list(all_results)
+                state["message"] = f"[{player_index + 1}/{total_players}] {username}: done ({summary['total_rounds']} rounds)"
+        except Exception:
+            log.exception("Local Demo analysis failed for %s", steamid)
+            all_failed.append({"username": username, "reason": "analysis failed"})
+            with state_lock:
+                state["failed"] = list(all_failed)
+
+    saved_summary = {
+        "map": map_name,
+        "max_demos": len(demo_paths),
+        "mode": "local_demos",
+        "source": "local_demos",
+        "failed": all_failed,
+        "results": all_results,
+    }
+    pipeline._write_json_atomic(
+        os.path.join(config.OUTPUT_DIR, "analysis_summary.json"),
+        saved_summary,
+        ensure_ascii=False,
+        indent=2,
+    )
+    with state_lock:
+        if all_results:
             state["status"] = "done"
-            state["message"] = f"Local Demo analysis complete: {summary['total_rounds']} rounds"
-            state["progress"] = [{"id": steamid, "step": 4, "msg": "Complete"}]
-            state["results"] = [result]
-            state["failed"] = []
-            state["source"] = "local_demos"
-    except Exception:
-        log.exception("Local Demo analysis failed for %s", steamid)
-        with state_lock:
+            state["message"] = f"Local Demo analysis complete: {len(all_results)} players, {sum(r['round_count'] for r in all_results)} rounds"
+        else:
             state["status"] = "error"
-            state["message"] = "Local Demo analysis failed; check server logs"
-            state["results"] = []
-            state["failed"] = [{"username": username, "reason": "analysis failed"}]
-            state["source"] = "local_demos"
-    finally:
-        local_demo_pipeline.cleanup_session(session_id)
+            state["message"] = "Local Demo analysis failed for all players"
+        state["progress"] = []
+        state["results"] = all_results
+        state["failed"] = all_failed
+        state["source"] = "local_demos"
+    local_demo_pipeline.cleanup_session(session_id)
 
 
 def _run_analysis(usernames, map_name, max_demos=10, mode="normal"):

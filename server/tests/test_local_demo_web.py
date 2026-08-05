@@ -45,7 +45,10 @@ def _fake_inspect(paths):
         })
     return {
         "map": "de_nuke", "files": details,
-        "players": [{"steamid": "76561198146001127", "username": "L4n", "appearances": len(details)}],
+        "players": [
+            {"steamid": "76561198000000001", "username": "Other", "appearances": len(details)},
+            {"steamid": "76561198146001127", "username": "L4n", "appearances": len(details)},
+        ],
     }
 
 
@@ -100,7 +103,10 @@ def test_inspect_returns_map_files_and_common_players(monkeypatch):
     assert response.status_code == 200
     assert body["map"] == "de_nuke"
     assert [item["name"] for item in body["files"]] == ["one.dem", "two.dem"]
-    assert body["players"] == [{"steamid": "76561198146001127", "username": "L4n", "appearances": 2}]
+    assert body["players"] == [
+        {"steamid": "76561198000000001", "username": "Other", "appearances": 2},
+        {"steamid": "76561198146001127", "username": "L4n", "appearances": 2},
+    ]
     session = Path(web_server.config.LOCAL_DEMO_DIR) / body["session_id"]
     manifest = json.loads((session / "manifest.json").read_text(encoding="utf-8"))
     assert len(manifest["files"]) == 2
@@ -154,7 +160,7 @@ def test_analyze_runs_in_background_writes_replay_data_and_cleans_session(monkey
     monkeypatch.setattr(local_demo_pipeline, "run_local_demos", fake_run)
     response = web_server.app.test_client().post(
         "/api/local-demos/analyze",
-        json={"session_id": session_id, "steamid": "76561198146001127"},
+        json={"session_id": session_id},
     )
     assert response.status_code == 200
     assert response.get_json()["source"] == "local_demos"
@@ -162,29 +168,32 @@ def test_analyze_runs_in_background_writes_replay_data_and_cleans_session(monkey
     with web_server.state_lock:
         assert web_server.state["source"] == "local_demos"
         assert web_server.state["status"] == "running"
+        assert web_server.state["total_players"] == 2
 
     target, args, _daemon = launched[0]
     target(*args)
     status = web_server.app.test_client().get("/api/status").get_json()
     assert status["status"] == "done"
     assert status["source"] == "local_demos"
-    assert status["results"][0]["round_count"] == 1
-    assert status["results"][0]["player_json"].startswith("/output/player_local_")
-    domain = status["results"][0]["domain"]
-    output = web_server.app.test_client().get(f"/api/player/{domain}")
-    assert output.status_code == 200
-    assert "grenades" in output.get_json()["rounds"][0]
-    assert output.get_json()["rounds"][0]["death_t"] == 4
+    assert len(status["results"]) == 2
+    for result in status["results"]:
+        assert result["round_count"] == 1
+        assert result["player_json"].startswith("/output/player_local_")
+        domain = result["domain"]
+        output = web_server.app.test_client().get(f"/api/player/{domain}")
+        assert output.status_code == 200
+        assert "grenades" in output.get_json()["rounds"][0]
+        assert output.get_json()["rounds"][0]["death_t"] == 4
     assert not (Path(web_server.config.LOCAL_DEMO_DIR) / session_id).exists()
 
 
-def test_analyze_rejects_invalid_session_or_player():
+def test_analyze_rejects_invalid_session():
     client = web_server.app.test_client()
     assert client.post(
         "/api/local-demos/analyze",
-        json={"session_id": "bad", "steamid": "76561198146001127"},
+        json={"session_id": "bad"},
     ).status_code == 400
     assert client.post(
         "/api/local-demos/analyze",
-        json={"session_id": "0" * 32, "steamid": "76561198146001127"},
+        json={"session_id": "0" * 32},
     ).status_code == 400
