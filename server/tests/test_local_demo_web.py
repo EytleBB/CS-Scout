@@ -123,13 +123,13 @@ def test_inspect_rejects_map_mismatch_and_no_common_player(monkeypatch):
     assert "one map" in response.get_json()["error"]
     assert list(Path(web_server.config.LOCAL_DEMO_DIR).iterdir()) == []
 
-    def no_common(_paths):
-        raise local_demo_pipeline.LocalDemoError("no common player")
+    def no_players(_paths):
+        raise local_demo_pipeline.LocalDemoError("no recognizable players")
 
-    monkeypatch.setattr(local_demo_pipeline, "inspect_demos", no_common)
+    monkeypatch.setattr(local_demo_pipeline, "inspect_demos", no_players)
     response = _upload(web_server.app.test_client())
     assert response.status_code == 400
-    assert "common player" in response.get_json()["error"]
+    assert "players" in response.get_json()["error"]
 
 
 def test_analyze_runs_in_background_writes_replay_data_and_cleans_session(monkeypatch):

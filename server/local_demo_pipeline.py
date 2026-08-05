@@ -153,20 +153,21 @@ def inspect_demos(paths: list[Path]) -> dict:
     if map_name not in maps.available_maps():
         raise LocalDemoError(f"地图资源未准备：{map_name}")
 
-    common_ids = set(details[0]["players"])
-    for item in details[1:]:
-        common_ids.intersection_update(item["players"])
-    if not common_ids:
-        raise LocalDemoError("这些 Demo 没有共同出现的玩家")
+    all_ids = set()
+    for item in details:
+        all_ids.update(item["players"])
+    if not all_ids:
+        raise LocalDemoError("这些 Demo 中没有可识别的玩家")
 
     players = []
-    for sid in sorted(common_ids):
+    for sid in sorted(all_ids):
         names = [item["players"].get(sid, "") for item in details]
         username = next((name for name in names if name), sid)
+        appearances = sum(1 for item in details if sid in item["players"])
         players.append({
             "steamid": sid,
             "username": username,
-            "appearances": len(details),
+            "appearances": appearances,
         })
     return {"map": map_name, "files": details, "players": players}
 
