@@ -335,6 +335,19 @@
   }
   #local-demo-inspect:hover:not(:disabled) { background: rgba(255, 255, 255, .12); }
   #local-demo-inspect:disabled { cursor: not-allowed; opacity: .48; }
+  #local-demo-players {
+    margin-top: 6px;
+    max-height: 160px;
+    overflow-y: auto;
+  }
+  #local-demo-players label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 0;
+    cursor: pointer;
+    font-size: 11px;
+  }
   #run {
     width: 100%;
     min-height: 42px;
@@ -634,6 +647,7 @@
      <button id="local-demo-inspect" type="button">Read Demos</button>
      <div id="local-demo-info" class="local-demo-info" hidden>
       <div id="local-demo-map"></div>
+      <div id="local-demo-players"></div>
      </div>
     </div>
     <div id="platform-player-list" class="form-section" data-five-e-only>

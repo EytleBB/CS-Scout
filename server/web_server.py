@@ -402,9 +402,23 @@ def api_local_demos_analyze():
         manifest = local_demo_pipeline.load_manifest(session_id)
     except local_demo_pipeline.LocalDemoError as exc:
         return jsonify({"error": str(exc)}), 400
-    players = manifest.get("players", [])
-    if not players:
-        return jsonify({"error": "No common players in this session"}), 400
+    all_players = manifest.get("players", [])
+    if not all_players:
+        return jsonify({"error": "No players in this session"}), 400
+
+    requested_ids = data.get("steamids")
+    if requested_ids is not None:
+        if not isinstance(requested_ids, list) or not all(
+            isinstance(s, str) and re.fullmatch(r"\d{10,20}", s.strip())
+            for s in requested_ids
+        ):
+            return jsonify({"error": "Invalid steamids"}), 400
+        wanted = {s.strip() for s in requested_ids}
+        players = [p for p in all_players if str(p.get("steamid", "")) in wanted]
+        if not players:
+            return jsonify({"error": "No matching players selected"}), 400
+    else:
+        players = all_players
 
     with state_lock:
         if state["status"] == "running":

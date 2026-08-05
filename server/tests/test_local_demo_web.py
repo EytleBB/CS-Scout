@@ -197,3 +197,40 @@ def test_analyze_rejects_invalid_session():
         "/api/local-demos/analyze",
         json={"session_id": "0" * 32},
     ).status_code == 400
+
+
+def test_analyze_with_steamids_filter(monkeypatch):
+    monkeypatch.setattr(local_demo_pipeline, "inspect_demos", _fake_inspect)
+    inspected = _upload(web_server.app.test_client(), ("a.dem", "b.dem"))
+    session_id = inspected.get_json()["session_id"]
+
+    launched = []
+    class CapturedThread:
+        def __init__(self, target, args=(), daemon=None):
+            launched.append((target, args, daemon))
+        def start(self):
+            return None
+    monkeypatch.setattr(web_server.threading, "Thread", CapturedThread)
+
+    def fake_run(paths, *, steamid, username, domain, map_name, output_path, progress_cb=None):
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps({"username": username, "steamid": steamid, "rounds": [], "round_count": 0}), encoding="utf-8")
+        return {"combat_stats": {}, "total_rounds": 0}
+
+    monkeypatch.setattr(local_demo_pipeline, "run_local_demos", fake_run)
+    response = web_server.app.test_client().post(
+        "/api/local-demos/analyze",
+        json={"session_id": session_id, "steamids": ["76561198146001127"]},
+    )
+    assert response.status_code == 200
+    target, args, _daemon = launched[0]
+    target(*args)
+    status = web_server.app.test_client().get("/api/status").get_json()
+    assert len(status["results"]) == 1
+    assert status["results"][0]["domain"] == "local_76561198146001127"
+
+    bad = web_server.app.test_client().post(
+        "/api/local-demos/analyze",
+        json={"session_id": session_id, "steamids": ["123"]},
+    )
+    assert bad.status_code == 400

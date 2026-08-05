@@ -44,6 +44,11 @@ function localDemoReady() {
   return activePlatform === "localdemos" && Boolean(localDemoSessionId);
 }
 
+function getSelectedSteamids() {
+  return Array.from(document.querySelectorAll("#local-demo-players input:checked"))
+    .map(cb => cb.value);
+}
+
 function formatBytes(bytes) {
   const value = Number(bytes);
   if (!Number.isFinite(value) || value < 0) return "?";
@@ -78,6 +83,8 @@ function resetLocalDemoState() {
   if (info) info.hidden = true;
   const map = $("#local-demo-map");
   if (map) map.textContent = "";
+  const list = $("#local-demo-players");
+  if (list) list.replaceChildren();
   updateLocalDemoRunButton();
 }
 function localAnalysisEnabled() {
@@ -607,11 +614,26 @@ async function inspectLocalDemos() {
     localDemoPlayers = Array.isArray(data.players) ? data.players : [];
     updateLocalDemoFileList(Array.isArray(data.files) ? data.files : null);
     const map = $("#local-demo-map");
-    if (map) map.textContent = `Map: ${String(data.map || "unknown")} — ${localDemoFiles.length} files, ${localDemoPlayers.length} common players`;
+    if (map) map.textContent = `Map: ${String(data.map || "unknown")} — ${localDemoFiles.length} files, ${localDemoPlayers.length} players`;
+    const list = $("#local-demo-players");
+    if (list) {
+      list.replaceChildren();
+      for (const player of localDemoPlayers) {
+        const label = document.createElement("label");
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.value = String(player.steamid || "");
+        cb.checked = true;
+        cb.addEventListener("change", updateLocalDemoRunButton);
+        const name = `${String(player.username || player.steamid)} (${player.appearances}/${localDemoFiles.length})`;
+        label.append(cb, document.createTextNode(name));
+        list.appendChild(label);
+      }
+    }
     const info = $("#local-demo-info");
     if (info) info.hidden = false;
     updateLocalDemoRunButton();
-    setStatus(`Demo inspection complete: ${localDemoPlayers.length} common players found.`);
+    setStatus(`Demo inspection complete: ${localDemoPlayers.length} players found.`);
   } catch (error) {
     resetLocalDemoState();
     setStatus(`Demo inspection failed: ${error.message}`);
@@ -625,12 +647,17 @@ async function runLocalDemoAnalysis() {
     setStatus("Inspect the Demos first.");
     return;
   }
+  const steamids = getSelectedSteamids();
+  if (steamids.length === 0) {
+    setStatus("Select at least one player to analyze.");
+    return;
+  }
   setAnalysisBusy(true);
   try {
     await requestJSON("/api/local-demos/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: localDemoSessionId })
+      body: JSON.stringify({ session_id: localDemoSessionId, steamids })
     });
     lastKnownAnalysisRunning = true;
     pollEpoch += 1;
@@ -754,7 +781,7 @@ function stat(label, value, suffix = "") {
   return item;
 }
 
-function buildPlayerCard(data, username, color) {
+function buildPlayerCard(data, username, color, rtype = "Buy") {
   const card = document.createElement("article");
   card.className = "card player-card";
   card.style.borderLeftColor = color;
@@ -773,15 +800,15 @@ function buildPlayerCard(data, username, color) {
     stat("AWP 持有率", combat.awp_rate, "%"),
     stat("有效回合", data.round_count ?? (Array.isArray(data.rounds) ? data.rounds.length : 0))
   );
-  const buyLabel = document.createElement("span");
-  buyLabel.className = "buy-label";
-  buyLabel.textContent = "Buy";
-  heading.append(title, stats, buyLabel);
+  const rtypeLabel = document.createElement("span");
+  rtypeLabel.className = "buy-label";
+  rtypeLabel.textContent = rtype === "Pistol" ? "Pistol" : "Buy";
+  heading.append(title, stats, rtypeLabel);
 
   const canvas = document.createElement("canvas");
   canvas.className = "replay-canvas";
-  canvas.dataset.rtype = "Buy";
-  canvas.setAttribute("aria-label", `${username} Buy 回放`);
+  canvas.dataset.rtype = rtype;
+  canvas.setAttribute("aria-label", `${username} ${rtype} 回放`);
   card.append(heading, canvas);
   return { card, canvas };
 }
@@ -814,9 +841,9 @@ async function addPlayer(result, epoch = pollEpoch) {
     const color = PLAYER_COLORS[nextColor % PLAYER_COLORS.length];
     nextColor += 1;
 
-    const { card, canvas } = buildPlayerCard(data, username, color);
-    card.id = `buy-${domain}`;
-    const buyPlayer = new ReplayPlayer(canvas, {
+    const { card: buyCard, canvas: buyCanvas } = buildPlayerCard(data, username, color, "Buy");
+    buyCard.id = `buy-${domain}`;
+    const buyPlayer = new ReplayPlayer(buyCanvas, {
       radar: data.radar,
       transform: data.transform,
       rounds: data.rounds,
@@ -827,10 +854,28 @@ async function addPlayer(result, epoch = pollEpoch) {
       ensurePistolPlayer(data);
       const cards = $("#cards");
       if (!cards) throw new Error("页面缺少玩家卡片容器");
-      cards.appendChild(card);
+      cards.appendChild(buyCard);
       allPlayers.push(buyPlayer);
       sideTargets.push({ player: buyPlayer, rtype: "Buy" });
-      registerReplayView(`buy:${domain}`, username, card, buyPlayer, color, `${username} 购买局`);
+      registerReplayView(`buy:${domain}`, username, buyCard, buyPlayer, color, `${username} 购买局`);
+
+      const pistolRoundsForPlayer = data.rounds.filter(r => r && r.rtype === "Pistol");
+      if (pistolRoundsForPlayer.length > 0) {
+        const { card: pistolCard, canvas: pistolCanvas } = buildPlayerCard(data, username, color, "Pistol");
+        pistolCard.id = `pistol-${domain}`;
+        const pistolPlayer = new ReplayPlayer(pistolCanvas, {
+          radar: data.radar,
+          transform: data.transform,
+          rounds: data.rounds,
+          side: currentSide,
+          rtype: "Pistol"
+        });
+        cards.appendChild(pistolCard);
+        allPlayers.push(pistolPlayer);
+        sideTargets.push({ player: pistolPlayer, rtype: "Pistol" });
+        registerReplayView(`pistol:${domain}`, `${username} 手枪局`, pistolCard, pistolPlayer, color, `${username} 手枪局`);
+      }
+
       players.set(domain, { data, buyPlayer, color });
 
       for (const round of data.rounds) {

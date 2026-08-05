@@ -579,6 +579,7 @@ function element(overrides = {}) {
     setAttribute(name, value) { this.attributes[name] = String(value); },
     addEventListener(name, handler) { this.listeners[name] = handler; },
     appendChild(child) { this.children.push(child); },
+    append(...children) { this.children.push(...children); },
     replaceChildren(...children) { this.children = children; },
   }, overrides);
 }
@@ -589,14 +590,23 @@ const elements = {
   "#local-demo-inspect": element(),
   "#local-demo-info": element(),
   "#local-demo-map": element(),
+  "#local-demo-players": element(),
   "#run": element(),
   "#status": element(),
   "#failed": element(),
 };
+const mockCheckboxes = [
+  element({ value: "76561198146001127", checked: true }),
+  element({ value: "76561198000000001", checked: true }),
+];
 global.document = {
   querySelector(selector) { return elements[selector] || null; },
-  querySelectorAll() { return []; },
+  querySelectorAll(selector) {
+    if (selector === "#local-demo-players input:checked") return mockCheckboxes;
+    return [];
+  },
   createElement() { return element(); },
+  createTextNode(text) { return { textContent: String(text) }; },
   addEventListener() {},
 };
 
@@ -622,7 +632,7 @@ global.fetch = async (url, options = {}) => {
   const analyzeRequest = requests.find(item => item.url === "/api/local-demos/analyze");
   const body = JSON.parse(analyzeRequest.options.body);
   if (body.session_id !== "a".repeat(32)) throw new Error("analyze payload missing session_id");
-  if (body.steamid !== undefined) throw new Error("analyze payload should not contain steamid");
+  if (!Array.isArray(body.steamids) || body.steamids.length === 0) throw new Error("analyze payload must include steamids array");
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """ % json.dumps(os.path.abspath(APP_JS))
     result = subprocess.run(
