@@ -563,4 +563,75 @@ if (!empty.hidden || switcher.hidden || toolbar.hidden) throw new Error("result 
         timeout=15,
         check=False,
     )
+
+
+def test_local_demo_upload_inspect_and_analyze_flow():
+    script = """
+const { setPlatform, inspectLocalDemos, runLocalDemoAnalysis } = require(%s);
+
+function element(overrides = {}) {
+  return Object.assign({
+    value: "", disabled: false, hidden: false, files: [], children: [],
+    dataset: {}, attributes: {}, listeners: {},
+    classList: {
+      toggle() {},
+    },
+    setAttribute(name, value) { this.attributes[name] = String(value); },
+    addEventListener(name, handler) { this.listeners[name] = handler; },
+    appendChild(child) { this.children.push(child); },
+    replaceChildren(...children) { this.children = children; },
+  }, overrides);
+}
+
+const elements = {
+  "#local-demo-files": element({ files: [{ name: "one.dem", size: 10 }, { name: "two.dem", size: 20 }] }),
+  "#local-demo-file-list": element(),
+  "#local-demo-inspect": element(),
+  "#local-demo-info": element(),
+  "#local-demo-map": element(),
+  "#local-demo-player": element(),
+  "#run": element(),
+  "#status": element(),
+  "#failed": element(),
+};
+global.document = {
+  querySelector(selector) { return elements[selector] || null; },
+  querySelectorAll() { return []; },
+  createElement() { return element(); },
+  addEventListener() {},
+};
+
+global.FormData = class {
+  constructor() { this.parts = []; }
+  append(name, file, filename) { this.parts.push({ name, file, filename }); }
+};
+const requests = [];
+global.fetch = async (url, options = {}) => {
+  requests.push({ url, options });
+  if (url === "/api/status") return { ok: true, status: 200, async json() { return { status: "idle", message: "", results: [], failed: [] }; } };
+  if (url === "/api/local-demos/inspect") return { ok: true, status: 200, async json() { return { session_id: "a".repeat(32), map: "de_nuke", files: [{ name: "one.dem", size: 10 }, { name: "two.dem", size: 20 }], players: [{ steamid: "76561198146001127", username: "L4n", appearances: 2 }] }; } };
+  if (url === "/api/local-demos/analyze") return { ok: true, status: 200, async json() { return { status: "started", source: "local_demos" }; } };
+  throw new Error("unexpected request " + url);
+};
+
+(async () => {
+  await setPlatform("localdemos");
+  await inspectLocalDemos();
+  if (requests[1].options.body.parts.length !== 2) throw new Error("two files were not appended to FormData");
+  if (requests[1].options.headers) throw new Error("multipart request manually set Content-Type");
+  if (elements["#local-demo-player"].value !== "76561198146001127") throw new Error("common player was not selected");
+  await runLocalDemoAnalysis();
+  const analyzeRequest = requests.find(item => item.url === "/api/local-demos/analyze");
+  const body = JSON.parse(analyzeRequest.options.body);
+  if (body.session_id !== "a".repeat(32) || body.steamid !== "76561198146001127") throw new Error("analyze payload is wrong");
+})().catch(error => { console.error(error); process.exitCode = 1; });
+""" % json.dumps(os.path.abspath(APP_JS))
+    result = subprocess.run(
+        [NODE, "-e", script],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
     assert result.returncode == 0, result.stderr or result.stdout

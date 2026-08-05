@@ -24,17 +24,39 @@ import hmac
 import ipaddress
 import tempfile
 import sys
+import uuid
 from pathlib import Path
 
-from flask import Flask, abort, render_template, request, jsonify, send_from_directory
+from flask import Flask, Request, abort, render_template, request, jsonify, send_from_directory
+from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.serving import make_server
 
 import pipeline
 import config
 import maps
+import local_demo_pipeline
+
+JSON_MAX_CONTENT_LENGTH = 16 * 1024
+
+
+class _Request(Request):
+    @property
+    def max_content_length(self):
+        # Keep the legacy JSON body limit while allowing the dedicated upload
+        # endpoint to receive the explicitly bounded multipart payload.
+        if self.path == "/api/local-demos/inspect" and self.mimetype == "multipart/form-data":
+            return config.LOCAL_DEMO_MAX_TOTAL_BYTES + 16 * 1024 * 1024
+        return JSON_MAX_CONTENT_LENGTH
+
 
 app = Flask(__name__, template_folder=os.path.join(config.BASE_DIR, "templates"))
-app.config["MAX_CONTENT_LENGTH"] = 16 * 1024
+app.request_class = _Request
+app.config["MAX_CONTENT_LENGTH"] = JSON_MAX_CONTENT_LENGTH
+
+
+@app.errorhandler(RequestEntityTooLarge)
+def handle_request_too_large(_error):
+    return jsonify({"error": "request body is too large"}), 413
 
 ICONS_DIR = os.path.abspath(os.path.join(config.BASE_DIR, "..", "radar", "icons"))
 GRENADE_ICON_FILES = frozenset({
@@ -47,6 +69,7 @@ MAX_USERNAME_LENGTH = 64
 CACHE_CONTROL_PATHS = frozenset({
     "/api/analyze", "/api/status", "/api/results",
     "/api/pwa/status", "/api/pwa/config", "/api/pwa/analyze",
+    "/api/local-demos/inspect", "/api/local-demos/analyze",
 })
 CACHE_CONTROL_PREFIXES = ("/api/player/", "/api/pwa/player/", "/output/")
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
@@ -65,6 +88,7 @@ state = {
     "max_demos": 10,
     "map": "",
     "mode": "normal",
+    "source": "5e",
 }
 state_lock = threading.Lock()
 
@@ -151,6 +175,11 @@ def _loopback_local_mode_enabled():
 
 def _local_analysis_allowed():
     """Allow keyless analysis only for the explicit loopback-only local mode."""
+    return _local_request_is_loopback()
+
+
+def _local_request_is_loopback():
+    """Return true only for a loopback client when local mode is enabled."""
     if not _loopback_local_mode_enabled():
         return False
     try:
@@ -267,6 +296,7 @@ def api_analyze():
         state.update({"status":"running","message":f"开始{mode_label}分析...","progress":[],
                       "results":[],"failed":[],"total_players":len(usernames),
                       "max_demos":max_demos,"map":map_name,"mode":mode})
+        state["source"] = "5e"
         try:
             worker = threading.Thread(
                 target=_run_analysis,
@@ -292,6 +322,137 @@ def api_analyze():
 @app.route("/api/maps")
 def api_maps():
     return jsonify({"maps": maps.available_maps()})
+
+
+def _local_demo_public_info(session_id, info, display_names):
+    return {
+        "session_id": session_id,
+        "map": info["map"],
+        "files": [
+            {
+                "name": display_names[i],
+                "size": item["size"],
+                "rounds": item.get("rounds", 0),
+            }
+            for i, item in enumerate(info["files"])
+        ],
+        "players": list(info["players"]),
+    }
+
+
+@app.route("/api/local-demos/inspect", methods=["POST"])
+def api_local_demos_inspect():
+    if not _local_request_is_loopback():
+        abort(404)
+    local_demo_pipeline.cleanup_expired_sessions()
+    uploads = request.files.getlist("demos")
+    if not uploads:
+        return jsonify({"error": "No Demo files uploaded"}), 400
+    if len(uploads) > config.LOCAL_DEMO_MAX_FILES:
+        return jsonify({
+            "error": f"Maximum {config.LOCAL_DEMO_MAX_FILES} Demo files",
+        }), 400
+
+    display_names = []
+    for upload in uploads:
+        original_name = str(upload.filename or "").strip()
+        if not original_name or Path(original_name).suffix.lower() != ".dem":
+            return jsonify({"error": "Only .dem files are supported"}), 400
+        display_names.append(Path(original_name).name[:255])
+
+    session_id = None
+    try:
+        session_id, session_dir = local_demo_pipeline.create_session()
+        paths = []
+        for upload in uploads:
+            stored_path = session_dir / f"{uuid.uuid4().hex}.dem"
+            upload.save(stored_path)
+            paths.append(stored_path)
+        info = local_demo_pipeline.inspect_demos(paths)
+        local_demo_pipeline.write_manifest(session_id, info, display_names)
+        return jsonify(_local_demo_public_info(session_id, info, display_names))
+    except local_demo_pipeline.LocalDemoError as exc:
+        if session_id:
+            local_demo_pipeline.cleanup_session(session_id)
+        return jsonify({"error": str(exc)}), 400
+    except OSError:
+        log.exception("Could not save or inspect local Demo upload")
+        if session_id:
+            local_demo_pipeline.cleanup_session(session_id)
+        return jsonify({"error": "Could not save or read Demo files"}), 400
+    except Exception:
+        log.exception("Unexpected local Demo inspection failure")
+        if session_id:
+            local_demo_pipeline.cleanup_session(session_id)
+        return jsonify({"error": "Demo inspection failed"}), 400
+
+
+@app.route("/api/local-demos/analyze", methods=["POST"])
+def api_local_demos_analyze():
+    if not _local_request_is_loopback():
+        abort(404)
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Request body must be a JSON object"}), 400
+    session_id = data.get("session_id")
+    steamid = data.get("steamid")
+    if not isinstance(session_id, str) or not local_demo_pipeline.SESSION_ID_RE.fullmatch(session_id):
+        return jsonify({"error": "Invalid local Demo session"}), 400
+    if not isinstance(steamid, str) or not re.fullmatch(r"\d{10,20}", steamid.strip()):
+        return jsonify({"error": "Invalid SteamID"}), 400
+    steamid = steamid.strip()
+
+    try:
+        manifest = local_demo_pipeline.load_manifest(session_id)
+    except local_demo_pipeline.LocalDemoError as exc:
+        return jsonify({"error": str(exc)}), 400
+    player = next(
+        (item for item in manifest.get("players", [])
+         if str(item.get("steamid", "")) == steamid),
+        None,
+    )
+    if player is None:
+        return jsonify({"error": "SteamID is not a common player in this session"}), 400
+
+    domain = f"local_{session_id}"
+    with state_lock:
+        if state["status"] == "running":
+            return jsonify({"error": "Analysis already running"}), 409
+        state.update({
+            "status": "running",
+            "message": "Starting local Demo analysis...",
+            "progress": [{"id": steamid, "step": 0, "msg": "Queued"}],
+            "results": [],
+            "failed": [],
+            "total_players": 1,
+            "max_demos": len(manifest["paths"]),
+            "map": manifest["map"],
+            "mode": "local_demos",
+            "source": "local_demos",
+        })
+        try:
+            worker = threading.Thread(
+                target=_run_local_demo_analysis,
+                args=(session_id, manifest, player, domain),
+                daemon=True,
+            )
+            worker.start()
+        except Exception:
+            log.exception("Could not start local Demo analysis worker")
+            state.update({
+                "status": "error",
+                "message": "Unable to start local Demo analysis",
+                "progress": [],
+                "results": [],
+                "failed": [],
+            })
+            local_demo_pipeline.cleanup_session(session_id)
+            return jsonify({"error": "Unable to start analysis worker"}), 503
+    return jsonify({
+        "status": "started",
+        "source": "local_demos",
+        "domain": domain,
+    })
 
 
 def _pwa_request_is_local():
@@ -400,6 +561,7 @@ def api_status():
                     "max_demos": saved.get("max_demos", 10),
                     "map": saved.get("map", ""),
                     "mode": saved.get("mode", "normal"),
+                    "source": saved.get("source", "5e"),
                 })
     return jsonify(snapshot)
 
@@ -409,7 +571,7 @@ def _load_analysis_summary():
     if not os.path.exists(summary_path):
         return {
             "results": [], "failed": [], "max_demos": 10,
-            "map": "", "mode": "normal",
+            "map": "", "mode": "normal", "source": "5e",
         }
     with open(summary_path, encoding="utf-8") as f:
         summary = json.load(f)
@@ -451,6 +613,69 @@ def serve_icons(filename):
 
 
 # ── Background runner ─────────────────────────────────────────────────────────
+
+def _run_local_demo_analysis(session_id, manifest, player, domain):
+    steamid = str(player["steamid"])
+    username = str(player.get("username") or steamid)
+    demo_paths = list(manifest["paths"])
+
+    def progress_cb(index, total, message):
+        with state_lock:
+            state["message"] = f"[{index + 1}/{total}] {message}"
+            if state["progress"]:
+                state["progress"][0].update({"step": min(3, index + 1), "msg": message})
+
+    try:
+        output_path = Path(config.OUTPUT_DIR) / f"player_{domain}.json"
+        summary = local_demo_pipeline.run_local_demos(
+            demo_paths,
+            steamid=steamid,
+            username=username,
+            domain=domain,
+            map_name=manifest["map"],
+            output_path=output_path,
+            progress_cb=progress_cb,
+        )
+        result = {
+            "username": username,
+            "domain": domain,
+            "player_json": f"/output/player_{domain}.json",
+            "combat_stats": summary["combat_stats"],
+            "demos_found": len(demo_paths),
+            "round_count": summary["total_rounds"],
+        }
+        saved_summary = {
+            "map": manifest["map"],
+            "max_demos": len(demo_paths),
+            "mode": "local_demos",
+            "source": "local_demos",
+            "failed": [],
+            "results": [result],
+        }
+        pipeline._write_json_atomic(
+            os.path.join(config.OUTPUT_DIR, "analysis_summary.json"),
+            saved_summary,
+            ensure_ascii=False,
+            indent=2,
+        )
+        with state_lock:
+            state["status"] = "done"
+            state["message"] = f"Local Demo analysis complete: {summary['total_rounds']} rounds"
+            state["progress"] = [{"id": steamid, "step": 4, "msg": "Complete"}]
+            state["results"] = [result]
+            state["failed"] = []
+            state["source"] = "local_demos"
+    except Exception:
+        log.exception("Local Demo analysis failed for %s", steamid)
+        with state_lock:
+            state["status"] = "error"
+            state["message"] = "Local Demo analysis failed; check server logs"
+            state["results"] = []
+            state["failed"] = [{"username": username, "reason": "analysis failed"}]
+            state["source"] = "local_demos"
+    finally:
+        local_demo_pipeline.cleanup_session(session_id)
+
 
 def _run_analysis(usernames, map_name, max_demos=10, mode="normal"):
     def progress_cb(opp_idx, total, username, step, msg):
@@ -547,6 +772,10 @@ def _write_startup_info(path, token, port):
 
 def _run_development_server():
     """Run the local server and optionally report an OS-assigned port."""
+    try:
+        local_demo_pipeline.cleanup_expired_sessions()
+    except Exception:
+        log.exception("Could not clean expired local Demo sessions")
     os.makedirs(config.OUTPUT_DIR, exist_ok=True)
     server = None
     try:

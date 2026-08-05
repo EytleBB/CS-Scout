@@ -309,6 +309,32 @@
     font-size: 11px;
     line-height: 1.55;
   }
+  .local-demo-file-list,
+  .local-demo-info {
+    margin-top: 8px;
+    padding: 9px 10px;
+    border: 1px solid rgba(255, 255, 255, .08);
+    border-radius: 7px;
+    background: rgba(255, 255, 255, .035);
+    color: var(--text-color-secondary);
+    font-size: 10px;
+    line-height: 1.55;
+    overflow-wrap: anywhere;
+  }
+  .local-demo-file-list:empty,
+  .local-demo-info:empty { display: none; }
+  #local-demo-inspect {
+    width: 100%;
+    min-height: 36px;
+    margin-top: 6px;
+    padding: 7px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 7px;
+    background: rgba(255, 255, 255, .06);
+    color: var(--text-color-primary);
+  }
+  #local-demo-inspect:hover:not(:disabled) { background: rgba(255, 255, 255, .12); }
+  #local-demo-inspect:disabled { cursor: not-allowed; opacity: .48; }
   #run {
     width: 100%;
     min-height: 42px;
@@ -590,17 +616,31 @@
       <button id="platform-5e" type="button" data-platform="5e" class="active" aria-pressed="true">5E</button>
       {% if local_mode %}
       <button id="platform-perfectworld" type="button" data-platform="perfectworld" aria-pressed="false">完美平台</button>
+       <button id="platform-local-demos" type="button" data-platform="localdemos" aria-pressed="false">Local Demo</button>
       {% endif %}
      </div>
     </div>
-    <div class="form-section">
+    <div class="form-section" data-five-e-only>
      <label for="map">地图</label>
     <select id="map" aria-label="地图"></select>
     <label for="depth">每人 Demo 数</label>
     <input id="depth" type="number" min="1" max="10" value="6">
     <div id="pwa-hint" class="pwa-hint" hidden>匹配到对局后会自动填入对手；请确认名单，再点击开始分析。</div>
     </div>
-    <div id="platform-player-list" class="form-section">
+    <div id="local-demo-controls" class="form-section" data-local-demos-only hidden>
+     <label for="local-demo-files">Local 5E Demos</label>
+     <input id="local-demo-files" type="file" accept=".dem" multiple>
+     <div id="local-demo-file-list" class="local-demo-file-list" aria-live="polite"></div>
+     <button id="local-demo-inspect" type="button">Read Demos</button>
+     <div id="local-demo-info" class="local-demo-info" hidden>
+      <div id="local-demo-map"></div>
+      <label for="local-demo-player">Target player</label>
+      <select id="local-demo-player" aria-label="Target player" disabled>
+       <option value="">Inspect Demos first</option>
+      </select>
+     </div>
+    </div>
+    <div id="platform-player-list" class="form-section" data-five-e-only>
      <label id="player-input-label" for="u0">5E 用户名</label>
     <div class="player-inputs">
      <input id="u0" autocomplete="off" maxlength="64" placeholder="对手用户名 1">

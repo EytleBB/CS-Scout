@@ -28,8 +28,33 @@ def _port_env(name, default):
     return value
 
 
+def _bounded_int_env(name, default, minimum, maximum):
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError, OverflowError):
+        value = int(default)
+    return max(int(minimum), min(int(maximum), value))
+
+
 DEMO_DIR = _absolute_path_env(
     "CS_SCOUT_DEMO_DIR", os.path.join(BASE_DIR, "demos_opponents")
+)
+LOCAL_DEMO_DIR = _absolute_path_env(
+    "CS_SCOUT_LOCAL_DEMO_DIR", os.path.join(DEMO_DIR, "local_sessions")
+)
+LOCAL_DEMO_MAX_FILES = _bounded_int_env(
+    "CS_SCOUT_LOCAL_DEMO_MAX_FILES", 10, 1, 10
+)
+LOCAL_DEMO_MAX_FILE_BYTES = _bounded_int_env(
+    "CS_SCOUT_LOCAL_DEMO_MAX_FILE_BYTES", 1024 ** 3, 1, 1024 ** 3
+)
+LOCAL_DEMO_MAX_TOTAL_BYTES = _bounded_int_env(
+    "CS_SCOUT_LOCAL_DEMO_MAX_TOTAL_BYTES", 4 * 1024 ** 3,
+    1, 4 * 1024 ** 3,
+)
+LOCAL_DEMO_SESSION_TTL_SECONDS = _bounded_int_env(
+    "CS_SCOUT_LOCAL_DEMO_SESSION_TTL_SECONDS", 24 * 60 * 60,
+    60 * 60, 7 * 24 * 60 * 60,
 )
 OUTPUT_DIR = _absolute_path_env(
     "CS_SCOUT_OUTPUT_DIR", os.path.join(BASE_DIR, "output")

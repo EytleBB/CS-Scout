@@ -31,10 +31,67 @@ let publicMonitoringEnabled = false;
 // storage. Browser extensions and password managers still apply their own
 // form-handling policies.
 let accessKey = "";
+let localDemoSessionId = "";
+let localDemoPlayers = [];
+let localDemoFiles = [];
 
 const PLAYBACK_SPEEDS = [1, 2, 4];
 const clock = { elapsed: 0, playing: true, speed: 2, last: null, raf: null };
 
+
+
+function localDemoReady() {
+  const select = $("#local-demo-player");
+  return activePlatform === "localdemos" && Boolean(
+    localDemoSessionId && select && select.value
+  );
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value < 0) return "?";
+  if (value < 1024 * 1024) return `${Math.round(value / 1024)} KiB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MiB`;
+  return `${(value / 1024 / 1024 / 1024).toFixed(2)} GiB`;
+}
+
+function updateLocalDemoFileList(serverFiles = null) {
+  const list = $("#local-demo-file-list");
+  if (!list) return;
+  list.replaceChildren();
+  const files = Array.isArray(serverFiles) ? serverFiles : localDemoFiles;
+  for (const file of files) {
+    const item = document.createElement("div");
+    item.textContent = `${String(file.name || "Demo")} ? ${formatBytes(file.size)}`;
+    list.appendChild(item);
+  }
+  if (!files.length) list.textContent = "No Demo files selected";
+}
+
+function updateLocalDemoRunButton() {
+  const runButton = $("#run");
+  if (!runButton || activePlatform !== "localdemos") return;
+  runButton.disabled = analysisBusy || !localDemoReady();
+}
+
+function resetLocalDemoState() {
+  localDemoSessionId = "";
+  localDemoPlayers = [];
+  const select = $("#local-demo-player");
+  if (select) {
+    select.replaceChildren();
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "Inspect Demos first";
+    select.appendChild(option);
+    select.disabled = true;
+  }
+  const info = $("#local-demo-info");
+  if (info) info.hidden = true;
+  const map = $("#local-demo-map");
+  if (map) map.textContent = "";
+  updateLocalDemoRunButton();
+}
 function localAnalysisEnabled() {
   return Boolean(document.body && document.body.dataset &&
     document.body.dataset.localAnalysis === "true");
@@ -87,7 +144,8 @@ function setAnalysisBusy(busy) {
   const runButton = $("#run");
   if (runButton) {
     runButton.disabled = disabled ||
-      (activePlatform === "perfectworld" && !pwaCanAnalyze);
+      (activePlatform === "perfectworld" && !pwaCanAnalyze) ||
+      (activePlatform === "localdemos" && !localDemoReady());
   }
   for (const button of document.querySelectorAll("[data-analysis-mode]")) {
     button.disabled = disabled;
@@ -97,29 +155,41 @@ function setAnalysisBusy(busy) {
   }
   const depth = $("#depth");
   if (depth && activePlatform === "perfectworld") depth.disabled = disabled;
+  const fileInput = $("#local-demo-files");
+  if (fileInput) fileInput.disabled = disabled;
+  const inspectButton = $("#local-demo-inspect");
+  if (inspectButton) inspectButton.disabled = disabled || localDemoFiles.length === 0;
+  const playerSelect = $("#local-demo-player");
+  if (playerSelect) playerSelect.disabled = disabled || !localDemoSessionId || !localDemoPlayers.length;
+  updateLocalDemoRunButton();
 }
 
 function updatePlatformControls() {
   const perfectWorld = activePlatform === "perfectworld";
+  const localDemos = activePlatform === "localdemos";
   for (const button of document.querySelectorAll("[data-platform]")) {
     const active = button.dataset.platform === activePlatform;
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", String(active));
   }
   for (const section of document.querySelectorAll("[data-five-e-only]")) {
-    section.hidden = perfectWorld;
+    section.hidden = perfectWorld || localDemos;
   }
   const hint = $("#pwa-hint");
+  for (const section of document.querySelectorAll("[data-local-demos-only]")) {
+    section.hidden = !localDemos;
+  }
+  updateLocalDemoFileList();
   if (hint) hint.hidden = !perfectWorld;
   const mapSelect = $("#map");
-  if (mapSelect) mapSelect.disabled = perfectWorld || availableMapNames.length === 0;
+  if (mapSelect) mapSelect.disabled = perfectWorld || localDemos || availableMapNames.length === 0;
   const playerLabel = $("#player-input-label");
   if (playerLabel) playerLabel.textContent = perfectWorld ? "完美平台用户名" : "5E 用户名";
   for (let index = 0; index < 5; index += 1) {
     const input = $(`#u${index}`);
     if (!input) continue;
-    input.readOnly = perfectWorld;
-    input.setAttribute("aria-readonly", String(perfectWorld));
+    input.readOnly = perfectWorld || localDemos;
+    input.setAttribute("aria-readonly", String(perfectWorld || localDemos));
     input.setAttribute(
       "aria-label",
       perfectWorld ? `完美平台用户名 ${index + 1}` :
@@ -131,6 +201,10 @@ function updatePlatformControls() {
   const runButton = $("#run");
   if (runButton) runButton.textContent = perfectWorld ? "开始分析" : "开始扫描";
   const emptyTitle = $("#empty-title");
+  if (runButton && localDemos) runButton.textContent = "Start parsing";
+  updateLocalDemoRunButton();
+  if (localDemos) setStatus("Select local Demos, inspect them, then choose a player.");
+  if (!localDemos) resetLocalDemoState();
   const emptyDescription = $("#empty-description");
   if (emptyTitle) emptyTitle.textContent = perfectWorld ? "等待进入完美平台对局" : "等待扫描数据";
   if (emptyDescription) {
@@ -168,8 +242,8 @@ async function configurePerfectWorld() {
 
 async function setPlatform(platform) {
   if (analysisBusy) return;
-  if (platform !== "5e" && platform !== "perfectworld") return;
-  if (activePlatform === "5e" && platform === "perfectworld") {
+  if (platform !== "5e" && platform !== "perfectworld" && platform !== "localdemos") return;
+  if (activePlatform === "5e" && platform !== "5e") {
     fiveEUsernames = Array.from({ length: 5 }, (_item, index) => {
       const input = $(`#u${index}`);
       return input ? input.value : "";
@@ -177,6 +251,7 @@ async function setPlatform(platform) {
   }
   activePlatform = platform;
   pwaCanAnalyze = false;
+  if (platform === "localdemos") resetLocalDemoState();
   if (platform === "perfectworld") showPerfectWorldTargets([]);
   pollEpoch += 1;
   const epoch = pollEpoch;
@@ -185,7 +260,9 @@ async function setPlatform(platform) {
   resetResults();
   updatePlatformControls();
   setAnalysisBusy(false);
-  if (platform === "perfectworld") {
+  if (platform === "localdemos") {
+    setStatus("Select local Demos, inspect them, then choose a player.");
+  } else if (platform === "perfectworld") {
     setStatus("正在连接完美平台自动侦察…");
     try {
       await configurePerfectWorld();
@@ -312,6 +389,19 @@ function wireControls() {
   for (const button of platformButtons) {
     button.addEventListener("click", () => { void setPlatform(button.dataset.platform); });
   }
+  const localFileInput = $("#local-demo-files");
+  if (localFileInput) {
+    localFileInput.addEventListener("change", () => {
+      localDemoFiles = localFileInput.files ? Array.from(localFileInput.files) : [];
+      resetLocalDemoState();
+      updateLocalDemoFileList();
+      setAnalysisBusy(false);
+    });
+  }
+  const localInspectButton = $("#local-demo-inspect");
+  if (localInspectButton) localInspectButton.addEventListener("click", () => { void inspectLocalDemos(); });
+  const localPlayerSelect = $("#local-demo-player");
+  if (localPlayerSelect) localPlayerSelect.addEventListener("change", updateLocalDemoRunButton);
   setPlaybackSpeed(clock.speed);
   setAnalysisMode(analysisMode);
   updatePlatformControls();
@@ -399,7 +489,7 @@ async function loadMaps() {
       option.textContent = String(mapName);
       select.appendChild(option);
     }
-    select.disabled = activePlatform === "perfectworld" || mapNames.length === 0;
+    select.disabled = activePlatform === "perfectworld" || activePlatform === "localdemos" || mapNames.length === 0;
     if (mapNames.length === 0) setStatus("没有可用地图，请先生成地图资源。");
   } catch (error) {
     availableMapNames = [];
@@ -510,7 +600,93 @@ function resetResults() {
   renderFailures();
 }
 
+
+
+async function inspectLocalDemos() {
+  const input = $("#local-demo-files");
+  if (!input || !input.files || input.files.length === 0) {
+    setStatus("Select one or more .dem files first.");
+    return;
+  }
+  localDemoFiles = Array.from(input.files);
+  localDemoSessionId = "";
+  localDemoPlayers = [];
+  setAnalysisBusy(true);
+  try {
+    const formData = new FormData();
+    for (const file of localDemoFiles) formData.append("demos", file, file.name);
+    const data = await requestJSON("/api/local-demos/inspect", {
+      method: "POST",
+      body: formData
+    });
+    localDemoSessionId = String(data.session_id || "");
+    localDemoPlayers = Array.isArray(data.players) ? data.players : [];
+    updateLocalDemoFileList(Array.isArray(data.files) ? data.files : null);
+    const map = $("#local-demo-map");
+    if (map) map.textContent = `Map: ${String(data.map || "unknown")} ? ${localDemoFiles.length} files`;
+    const info = $("#local-demo-info");
+    if (info) info.hidden = false;
+    const select = $("#local-demo-player");
+    if (select) {
+      select.replaceChildren();
+      for (const player of localDemoPlayers) {
+        const option = document.createElement("option");
+        option.value = String(player.steamid || "");
+        option.textContent = `${String(player.username || player.steamid)} (${String(player.steamid)})`;
+        select.appendChild(option);
+      }
+      select.value = localDemoPlayers.length === 1 ? String(localDemoPlayers[0].steamid) : "";
+      select.disabled = localDemoPlayers.length === 0;
+    }
+    updateLocalDemoRunButton();
+    setStatus(`Demo inspection complete: ${localDemoPlayers.length} common players found.`);
+  } catch (error) {
+    resetLocalDemoState();
+    setStatus(`Demo inspection failed: ${error.message}`);
+  } finally {
+    setAnalysisBusy(false);
+  }
+}
+
+async function runLocalDemoAnalysis() {
+  const select = $("#local-demo-player");
+  if (!localDemoReady() || !select) {
+    setStatus("Inspect the Demos and select a common player first.");
+    return;
+  }
+  setAnalysisBusy(true);
+  try {
+    await requestJSON("/api/local-demos/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: localDemoSessionId, steamid: select.value })
+    });
+    lastKnownAnalysisRunning = true;
+    pollEpoch += 1;
+    clearPollTimer();
+    resetResults();
+    setStatus("Local Demo analysis started...");
+    await poll(pollEpoch);
+  } catch (error) {
+    if (error.status === 409) {
+      lastKnownAnalysisRunning = true;
+      pollEpoch += 1;
+      clearPollTimer();
+      resetResults();
+      setStatus("Another analysis is already running; restoring progress...");
+      await poll(pollEpoch);
+      return;
+    }
+    lastKnownAnalysisRunning = false;
+    setStatus(`Local Demo analysis failed: ${error.message}`);
+    setAnalysisBusy(false);
+  }
+}
 async function runAnalysis() {
+  if (activePlatform === "localdemos") {
+    await runLocalDemoAnalysis();
+    return;
+  }
   if (activePlatform === "perfectworld") {
     await runPerfectWorldAnalysis();
     return;
@@ -809,5 +985,6 @@ if (typeof module !== "undefined") {
     wireControls, setAnalysisMode, setAnalysisBusy, runAnalysis,
     connectWithEnteredKey, setPlatform, updatePlatformControls,
     showPerfectWorldTargets, runPerfectWorldAnalysis,
+    inspectLocalDemos, runLocalDemoAnalysis,
   };
 }
