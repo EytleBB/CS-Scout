@@ -397,9 +397,9 @@ def test_frontend_registers_button_switched_replay_views():
     source = response.get_data(as_text=True)
     assert 'registerReplayView("pistol", "手枪局（全员）"' in source
     assert 'registerReplayView(`buy:${domain}`, username, buyCard, buyPlayer, color, `${username} 购买局`)' in source
-    assert 'button.setAttribute("aria-pressed", String(active))' in source
-    assert 'const activeView = replayViews.get(activeViewKey)' in source
-    assert 'clock = { elapsed: 0, playing: true, speed: 2' in source
+    assert 'viewManager.drawActive' in source
+    assert 'replayClock.start()' in source
+    assert 'createReplay(buyCanvas' in source
     assert 'requestProtectedJSON("/api/analyze"' in source
     assert 'requestJSON("/api/status")' in source
     assert 'requestJSON(`/api/player/${encodeURIComponent(domain)}`' in source

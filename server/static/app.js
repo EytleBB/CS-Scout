@@ -1,5 +1,16 @@
 "use strict";
 
+// Load the replay engine modules. In Node, require() resolves the bundled
+// index. In the browser, engine.js + clock.js load first and populate
+// window.__replayEngine before this script runs.
+const engine = typeof require === "function"
+  ? require("./replay-engine/")
+  : (typeof window !== "undefined" && window.__replayEngine ? window.__replayEngine : {});
+const createReplay = engine.createReplay;
+const createClock = engine.createClock;
+const createViewManager = engine.createViewManager;
+const PLAYBACK_SPEEDS = engine.PLAYBACK_SPEEDS || [1, 2, 4];
+
 const $ = selector => document.querySelector(selector);
 const PLAYER_COLORS = ["#ef6aa8", "#55c8ff", "#ffd166", "#63d297", "#b59cff"];
 
@@ -8,9 +19,6 @@ let loadingDomains = new Set();
 let playerLoadAttempts = new Map();
 let playerFetchControllers = new Set();
 let allPlayers = [];
-let sideTargets = [];
-let replayViews = new Map();
-let activeViewKey = null;
 let pistolRounds = [];
 let pistolPlayer = null;
 let nextColor = 0;
@@ -35,10 +43,107 @@ let localDemoSessionId = "";
 let localDemoPlayers = [];
 let localDemoFiles = [];
 
-const PLAYBACK_SPEEDS = [1, 2, 4];
-const clock = { elapsed: 0, playing: true, speed: 2, last: null, raf: null };
+// --- Engine instances -------------------------------------------------------
+// The clock drives a single requestAnimationFrame loop that draws the active
+// view. The view manager handles button-style panel switching so only one
+// replay canvas is visible at a time.
+const replayClock = createClock({
+  playbackS: engine.PLAYBACK_S || 10,
+  windowS: engine.WINDOW_S || 20,
+  onTick: gameTime => drawAll(gameTime),
+  onControlsUpdate: updateClockControls
+});
 
+// View manager lazily resolves DOM elements via the provider function so it
+// can be created at module load time before the DOM is ready.
+const viewManager = createViewManager(() => ({
+  switcher: $("#view-switcher"),
+  toolbar: $("#view-toolbar"),
+  emptyState: $("#empty-state")
+}));
 
+// --- Clock wrappers (exported for test compatibility) -----------------------
+
+function playbackSeconds() {
+  return replayClock.playbackSeconds();
+}
+
+function windowSeconds() {
+  return replayClock.windowSeconds();
+}
+
+function currentGameTime() {
+  return replayClock.getGameTime();
+}
+
+function playbackElapsedDelta(realSeconds, speed) {
+  return replayClock.playbackElapsedDelta(realSeconds, speed);
+}
+
+// --- View management wrappers (exported for test compatibility) ------------
+
+function activateReplayView(viewKey) {
+  viewManager.activate(viewKey);
+  drawAll();
+}
+
+function registerReplayView(viewKey, label, panel, player, color = "", accessibleLabel = label) {
+  return viewManager.register(viewKey, label, panel, player, color, accessibleLabel);
+}
+
+function drawAll(gameTime = currentGameTime()) {
+  viewManager.drawActive(gameTime);
+}
+
+// --- Drawing / clock control updates ---------------------------------------
+
+function updateClockControls() {
+  const scrub = $("#scrub");
+  const label = $("#timelbl");
+  const button = $("#playpause");
+  if (scrub && document.activeElement !== scrub) {
+    scrub.value = String(Math.round(replayClock.getElapsed() / playbackSeconds() * 1000));
+  }
+  if (label) label.textContent = `${currentGameTime().toFixed(1)} / ${windowSeconds().toFixed(1)}s`;
+  if (button) {
+    const playing = replayClock.isPlaying();
+    button.textContent = playing ? "⏸" : "▶";
+    button.title = playing ? "暂停" : "播放";
+    button.setAttribute("aria-label", playing ? "暂停回放" : "播放回放");
+  }
+}
+
+function setPlaybackSpeed(speed) {
+  const rate = Number(speed);
+  if (!PLAYBACK_SPEEDS.includes(rate)) return;
+  replayClock.setSpeed(rate);
+  for (const button of document.querySelectorAll("[data-playback-speed]")) {
+    const active = Number(button.dataset.playbackSpeed) === rate;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  }
+}
+
+function setSide(side) {
+  if (side !== "CT" && side !== "T") return;
+  currentSide = side;
+  const ct = $("#side-ct");
+  const t = $("#side-t");
+  if (ct) {
+    const active = side === "CT";
+    ct.classList.toggle("active", active);
+    ct.setAttribute("aria-pressed", String(active));
+  }
+  if (t) {
+    const active = side === "T";
+    t.classList.toggle("active", active);
+    t.setAttribute("aria-pressed", String(active));
+  }
+  viewManager.setSide(side);
+  drawAll();
+}
+
+// --- Business logic ---------------------------------------------------------
 
 function localDemoReady() {
   return activePlatform === "localdemos" && Boolean(localDemoSessionId);
@@ -90,37 +195,6 @@ function resetLocalDemoState() {
 function localAnalysisEnabled() {
   return Boolean(document.body && document.body.dataset &&
     document.body.dataset.localAnalysis === "true");
-}
-
-function playbackSeconds() {
-  return typeof PLAYBACK_S === "number" && PLAYBACK_S > 0 ? PLAYBACK_S : 10;
-}
-
-function windowSeconds() {
-  return typeof WINDOW_S === "number" && WINDOW_S > 0 ? WINDOW_S : 20;
-}
-
-function currentGameTime() {
-  return clock.elapsed / playbackSeconds() * windowSeconds();
-}
-
-function playbackElapsedDelta(realSeconds, speed = clock.speed) {
-  const seconds = Number(realSeconds);
-  const rate = Number(speed);
-  if (!Number.isFinite(seconds) || seconds < 0 || !PLAYBACK_SPEEDS.includes(rate)) return 0;
-  return seconds * rate * playbackSeconds() / windowSeconds();
-}
-
-function setPlaybackSpeed(speed) {
-  const rate = Number(speed);
-  if (!PLAYBACK_SPEEDS.includes(rate)) return;
-  clock.speed = rate;
-  clock.last = null;
-  for (const button of document.querySelectorAll("[data-playback-speed]")) {
-    const active = Number(button.dataset.playbackSpeed) === rate;
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-pressed", String(active));
-  }
 }
 
 function setAnalysisMode(mode) {
@@ -288,63 +362,6 @@ async function runPerfectWorldAnalysis() {
   }
 }
 
-function drawAll(gameTime = currentGameTime()) {
-  const activeView = replayViews.get(activeViewKey);
-  if (!activeView || !activeView.player) return;
-  try {
-    activeView.player.drawAt(gameTime);
-  } catch (error) {
-    // A malformed player payload must not stop the shared animation clock.
-    console.error("Replay draw failed", error);
-  }
-}
-
-function updateClockControls() {
-  const scrub = $("#scrub");
-  const label = $("#timelbl");
-  const button = $("#playpause");
-  if (scrub && document.activeElement !== scrub) {
-    scrub.value = String(Math.round(clock.elapsed / playbackSeconds() * 1000));
-  }
-  if (label) label.textContent = `${currentGameTime().toFixed(1)} / ${windowSeconds().toFixed(1)}s`;
-  if (button) {
-    button.textContent = clock.playing ? "⏸" : "▶";
-    button.title = clock.playing ? "暂停" : "播放";
-    button.setAttribute("aria-label", clock.playing ? "暂停回放" : "播放回放");
-  }
-}
-
-function tick(timestamp) {
-  if (clock.last === null) clock.last = timestamp;
-  const delta = Math.max(0, Math.min((timestamp - clock.last) / 1000, 1));
-  clock.last = timestamp;
-  if (clock.playing) {
-    clock.elapsed = (clock.elapsed + playbackElapsedDelta(delta)) % playbackSeconds();
-  }
-  drawAll();
-  updateClockControls();
-  clock.raf = requestAnimationFrame(tick);
-}
-
-function setSide(side) {
-  if (side !== "CT" && side !== "T") return;
-  currentSide = side;
-  const ct = $("#side-ct");
-  const t = $("#side-t");
-  if (ct) {
-    const active = side === "CT";
-    ct.classList.toggle("active", active);
-    ct.setAttribute("aria-pressed", String(active));
-  }
-  if (t) {
-    const active = side === "T";
-    t.classList.toggle("active", active);
-    t.setAttribute("aria-pressed", String(active));
-  }
-  for (const { player, rtype } of sideTargets) player.setFilter(side, rtype);
-  drawAll();
-}
-
 function wireControls() {
   const playPause = $("#playpause");
   const scrub = $("#scrub");
@@ -355,18 +372,14 @@ function wireControls() {
   const platformButtons = document.querySelectorAll("[data-platform]");
   if (playPause) {
     playPause.addEventListener("click", () => {
-      clock.playing = !clock.playing;
-      clock.last = null;
+      replayClock.setPlaying(!replayClock.isPlaying());
       updateClockControls();
     });
   }
   if (scrub) {
     scrub.addEventListener("input", event => {
       const value = Number(event.target.value);
-      if (!Number.isFinite(value)) return;
-      clock.playing = false;
-      clock.elapsed = Math.max(0, Math.min(value, 1000)) / 1000 * playbackSeconds();
-      clock.last = null;
+      replayClock.seek(value);
       drawAll();
       updateClockControls();
     });
@@ -393,10 +406,10 @@ function wireControls() {
   }
   const localInspectButton = $("#local-demo-inspect");
   if (localInspectButton) localInspectButton.addEventListener("click", () => { void inspectLocalDemos(); });
-  setPlaybackSpeed(clock.speed);
+  setPlaybackSpeed(replayClock.getSpeed());
   setAnalysisMode(analysisMode);
   updatePlatformControls();
-  document.addEventListener("visibilitychange", () => { clock.last = null; });
+  document.addEventListener("visibilitychange", () => { replayClock._raw.last = null; });
 }
 
 async function requestJSON(url, options) {
@@ -511,47 +524,6 @@ function schedulePoll(epoch, delay = 2000) {
   pollTimer = setTimeout(() => poll(epoch), delay);
 }
 
-function activateReplayView(viewKey) {
-  if (!replayViews.has(viewKey)) return;
-  activeViewKey = viewKey;
-  for (const [key, view] of replayViews) {
-    const active = key === viewKey;
-    view.panel.hidden = !active;
-    view.button.classList.toggle("active", active);
-    view.button.setAttribute("aria-pressed", String(active));
-  }
-  drawAll();
-}
-
-function registerReplayView(viewKey, label, panel, player, color = "", accessibleLabel = label) {
-  if (replayViews.has(viewKey)) return replayViews.get(viewKey);
-  const switcher = $("#view-switcher");
-  const toolbar = $("#view-toolbar");
-  const empty = $("#empty-state");
-  if (!switcher || !panel || !player) throw new Error("页面缺少回放视图容器");
-
-  const button = document.createElement("button");
-  button.type = "button";
-  button.textContent = label;
-  button.title = label;
-  button.dataset.viewKey = viewKey;
-  button.setAttribute("aria-label", accessibleLabel);
-  button.setAttribute("aria-pressed", "false");
-  if (panel.id) button.setAttribute("aria-controls", panel.id);
-  if (color) button.style.setProperty("--view-color", color);
-  button.addEventListener("click", () => activateReplayView(viewKey));
-
-  panel.hidden = true;
-  switcher.appendChild(button);
-  const view = { panel, player, button };
-  replayViews.set(viewKey, view);
-  switcher.hidden = false;
-  if (toolbar) toolbar.hidden = false;
-  if (empty) empty.hidden = true;
-  if (activeViewKey === null) activateReplayView(viewKey);
-  return view;
-}
-
 function resetResults() {
   for (const controller of playerFetchControllers) controller.abort();
   for (const player of allPlayers) {
@@ -562,14 +534,12 @@ function resetResults() {
   playerLoadAttempts = new Map();
   playerFetchControllers = new Set();
   allPlayers = [];
-  sideTargets = [];
-  replayViews = new Map();
-  activeViewKey = null;
   pistolRounds = [];
   pistolPlayer = null;
   nextColor = 0;
   serverFailures = [];
   uiFailures = new Map();
+  viewManager.reset();
   const cards = $("#cards");
   const switcher = $("#view-switcher");
   const toolbar = $("#view-toolbar");
@@ -585,13 +555,10 @@ function resetResults() {
   if (legend) legend.replaceChildren();
   if (pistol) pistol.hidden = true;
   if (empty) empty.hidden = false;
-  clock.elapsed = 0;
-  clock.last = null;
+  replayClock.setElapsed(0);
   setSide("CT");
   renderFailures();
 }
-
-
 
 async function inspectLocalDemos() {
   const input = $("#local-demo-files");
@@ -614,7 +581,7 @@ async function inspectLocalDemos() {
     localDemoPlayers = Array.isArray(data.players) ? data.players : [];
     updateLocalDemoFileList(Array.isArray(data.files) ? data.files : null);
     const map = $("#local-demo-map");
-    if (map) map.textContent = `Map: ${String(data.map || "unknown")} — ${localDemoFiles.length} files, ${localDemoPlayers.length} players`;
+    if (map) map.textContent = `Map: ${String(data.map || "unknown")} - ${localDemoFiles.length} files, ${localDemoPlayers.length} players`;
     const list = $("#local-demo-players");
     if (list) {
       list.replaceChildren();
@@ -739,7 +706,7 @@ function ensurePistolPlayer(data) {
   const pistol = $("#pistol");
   if (!canvas) throw new Error("页面缺少合并手枪局画布");
   if (!pistol) throw new Error("页面缺少合并手枪局面板");
-  const player = new ReplayPlayer(canvas, {
+  const player = createReplay(canvas, {
     radar: data.radar,
     transform: data.transform,
     rounds: pistolRounds,
@@ -754,7 +721,7 @@ function ensurePistolPlayer(data) {
   }
   pistolPlayer = player;
   allPlayers.push(pistolPlayer);
-  sideTargets.push({ player: pistolPlayer, rtype: "Pistol" });
+  viewManager.addSideTarget(pistolPlayer, "Pistol");
 }
 
 function addLegendItem(username, color) {
@@ -843,7 +810,7 @@ async function addPlayer(result, epoch = pollEpoch) {
 
     const { card: buyCard, canvas: buyCanvas } = buildPlayerCard(data, username, color, "Buy");
     buyCard.id = `buy-${domain}`;
-    const buyPlayer = new ReplayPlayer(buyCanvas, {
+    const buyPlayer = createReplay(buyCanvas, {
       radar: data.radar,
       transform: data.transform,
       rounds: data.rounds,
@@ -856,14 +823,14 @@ async function addPlayer(result, epoch = pollEpoch) {
       if (!cards) throw new Error("页面缺少玩家卡片容器");
       cards.appendChild(buyCard);
       allPlayers.push(buyPlayer);
-      sideTargets.push({ player: buyPlayer, rtype: "Buy" });
+      viewManager.addSideTarget(buyPlayer, "Buy");
       registerReplayView(`buy:${domain}`, username, buyCard, buyPlayer, color, `${username} 购买局`);
 
       const pistolRoundsForPlayer = data.rounds.filter(r => r && r.rtype === "Pistol");
       if (pistolRoundsForPlayer.length > 0) {
         const { card: pistolCard, canvas: pistolCanvas } = buildPlayerCard(data, username, color, "Pistol");
         pistolCard.id = `pistol-${domain}`;
-        const pistolPlayer = new ReplayPlayer(pistolCanvas, {
+        const perPlayerPistol = createReplay(pistolCanvas, {
           radar: data.radar,
           transform: data.transform,
           rounds: data.rounds,
@@ -871,9 +838,9 @@ async function addPlayer(result, epoch = pollEpoch) {
           rtype: "Pistol"
         });
         cards.appendChild(pistolCard);
-        allPlayers.push(pistolPlayer);
-        sideTargets.push({ player: pistolPlayer, rtype: "Pistol" });
-        registerReplayView(`pistol:${domain}`, `${username} 手枪局`, pistolCard, pistolPlayer, color, `${username} 手枪局`);
+        allPlayers.push(perPlayerPistol);
+        viewManager.addSideTarget(perPlayerPistol, "Pistol");
+        registerReplayView(`pistol:${domain}`, `${username} 手枪局`, pistolCard, perPlayerPistol, color, `${username} 手枪局`);
       }
 
       players.set(domain, { data, buyPlayer, color });
@@ -987,7 +954,7 @@ function boot() {
   publicMonitoringEnabled = true;
   void poll(pollEpoch);
   updateClockControls();
-  if (typeof requestAnimationFrame === "function") clock.raf = requestAnimationFrame(tick);
+  replayClock.start();
 }
 
 if (typeof document !== "undefined") {
