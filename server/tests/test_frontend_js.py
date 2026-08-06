@@ -11,6 +11,7 @@ REPLAY_JS = os.path.join(os.path.dirname(__file__), "..", "static", "replay.js")
 APP_JS = os.path.join(os.path.dirname(__file__), "..", "static", "app.js")
 ENGINE_JS = os.path.join(os.path.dirname(__file__), "..", "static", "replay-engine", "engine.js")
 CLOCK_JS = os.path.join(os.path.dirname(__file__), "..", "static", "replay-engine", "clock.js")
+HEATMAP_JS = os.path.join(os.path.dirname(__file__), "..", "static", "replay-engine", "heatmap.js")
 pytestmark = pytest.mark.skipif(NODE is None, reason="Node.js is not installed")
 
 
@@ -832,5 +833,126 @@ if (vm.has("v1")) throw new Error("reset did not clear views");
         text=True,
         timeout=15,
         check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_heatmap_color_gradient_mapping():
+    script = f"""
+const {{ heatColor, HEATMAP_GRADIENT }} = require({json.dumps(os.path.abspath(HEATMAP_JS))});
+
+// At 0 the colour should be fully transparent.
+const c0 = heatColor(0);
+if (c0[3] !== 0) throw new Error("heatColor(0) should have alpha 0, got " + c0[3]);
+
+// At 1 it should be red-ish with high alpha.
+const c1 = heatColor(1);
+if (c1[0] < 200 || c1[3] < 200) throw new Error("heatColor(1) should be bright red with high alpha, got " + JSON.stringify(c1));
+
+// Clamping works.
+const cNeg = heatColor(-0.5);
+if (JSON.stringify(cNeg) !== JSON.stringify(c0)) throw new Error("negative t not clamped to 0");
+const cOver = heatColor(1.5);
+if (JSON.stringify(cOver) !== JSON.stringify(c1)) throw new Error("t > 1 not clamped to 1");
+
+// Midpoint should be between green and yellow stops.
+const cMid = heatColor(0.6);
+if (cMid[0] < 100 || cMid[1] < 100) throw new Error("midpoint colour unexpectedly dark: " + JSON.stringify(cMid));
+
+// Monotonic alpha increase (not strictly, but general upward trend).
+const alphaAt = t => heatColor(t)[3];
+const samples = [0, 0.1, 0.25, 0.5, 0.75, 1.0].map(alphaAt);
+let nonDecreasing = true;
+for (let i = 1; i < samples.length; i++) {{
+  if (samples[i] < samples[i - 1] - 5) {{ nonDecreasing = false; break; }}
+}}
+if (!nonDecreasing) throw new Error("alpha should generally increase: " + JSON.stringify(samples));
+
+// Gradient has at least 4 stops.
+if (HEATMAP_GRADIENT.length < 4) throw new Error("gradient too short");
+"""
+    result = subprocess.run(
+        [NODE, "-e", script],
+        capture_output=True, text=True, timeout=15, check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_heatmap_factory_collects_and_filters_points():
+    script = f"""
+global.Image = class FakeImage {{
+  constructor() {{ this.complete = false; this.naturalWidth = 0; this.naturalHeight = 0; }}
+  set src(value) {{ this._src = value; }}
+}};
+
+const {{ createHeatmap }} = require({json.dumps(os.path.abspath(HEATMAP_JS))});
+
+const calls = {{ fillRect: 0, drawImage: 0 }};
+const ctx = {{
+  clearRect() {{}}, fillRect() {{ calls.fillRect += 1; }}, drawImage() {{ calls.drawImage += 1; }},
+  save() {{}}, restore() {{}}, beginPath() {{}}, arc() {{}}, fill() {{}},
+  fillText() {{}}, textAlign: "", textBaseline: "", font: "",
+  createRadialGradient() {{ return {{ addColorStop() {{}} }}; }},
+  getImageData() {{ return {{ data: new Uint8ClampedArray(4) }}; }},
+  putImageData() {{}}
+}};
+const canvas = {{ width: 300, height: 200, getContext() {{ return ctx; }} }};
+
+const rounds = [
+  {{ side: "CT", rtype: "Buy", round_id: 1,
+     path: [[0, 100, 200], [1, 110, 210], [2, 120, 220], [3, 130, 230]] }},
+  {{ side: "T", rtype: "Buy", round_id: 2,
+     path: [[0, 500, 600], [1, 510, 610]] }},
+  {{ side: "CT", rtype: "Pistol", round_id: 3,
+     path: [[0, 300, 400]] }},
+];
+
+const hm = createHeatmap(canvas, {{
+  radar: "/maps/de_test/radar.png",
+  transform: {{ pos_x: 0, pos_y: 0, scale: 1 }},
+  rounds,
+  side: "CT",
+  rtype: "Buy"
+}});
+
+// Only round 1 matches CT + Buy.
+const points = hm._collectPoints();
+if (points.length < 2 || points.length > 4) {{
+  throw new Error("expected 2-4 CT Buy points (after min-distance filter), got " + points.length);
+}}
+// All points should come from round 1 (x in 100-130 range).
+for (const [x, y] of points) {{
+  if (x < 100 || x > 130) throw new Error("non-CT-Buy point leaked: " + JSON.stringify([x, y]));
+}}
+
+// Switching to T side should collect round 2 points.
+hm.setFilter("T", "Buy");
+const tPoints = hm._collectPoints();
+if (tPoints.length === 0) throw new Error("T Buy points missing");
+for (const [x, y] of tPoints) {{
+  if (x < 500) throw new Error("non-T-Buy point leaked: " + JSON.stringify([x, y]));
+}}
+
+// Switching to Pistol should collect round 3.
+hm.setFilter("CT", "Pistol");
+const pistolPoints = hm._collectPoints();
+if (pistolPoints.length !== 1) throw new Error("expected 1 CT Pistol point, got " + pistolPoints.length);
+
+// drawAt should draw background and density (or fallback).
+hm.imgFailed = true;
+hm.drawAt(0);
+if (calls.fillRect === 0) throw new Error("drawAt did not draw background");
+
+// toggleRound should exclude a round.
+hm.setFilter("CT", "Buy");
+hm.toggleRound(1, false);
+if (hm._filteredRounds().length !== 0) throw new Error("disabled round was not excluded");
+
+hm.destroy();
+if (!hm.destroyed) throw new Error("destroy did not set destroyed flag");
+"""
+    result = subprocess.run(
+        [NODE, "-e", script],
+        capture_output=True, text=True, timeout=15, check=False,
     )
     assert result.returncode == 0, result.stderr or result.stdout

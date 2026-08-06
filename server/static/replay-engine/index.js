@@ -3,6 +3,7 @@
 
 const engine = require("./engine");
 const clock = require("./clock");
+const heatmap = require("./heatmap");
 
 module.exports = {
   createReplay: engine.createReplay,
@@ -20,5 +21,8 @@ module.exports = {
   validSample: engine.validSample,
   createClock: clock.createClock,
   createViewManager: clock.createViewManager,
-  PLAYBACK_SPEEDS: clock.PLAYBACK_SPEEDS
+  PLAYBACK_SPEEDS: clock.PLAYBACK_SPEEDS,
+  createHeatmap: heatmap.createHeatmap,
+  heatColor: heatmap.heatColor,
+  HEATMAP_RADIUS: heatmap.HEATMAP_RADIUS
 };

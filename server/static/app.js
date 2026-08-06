@@ -9,6 +9,7 @@ const engine = typeof require === "function"
 const createReplay = engine.createReplay;
 const createClock = engine.createClock;
 const createViewManager = engine.createViewManager;
+const createHeatmap = engine.createHeatmap;
 const PLAYBACK_SPEEDS = engine.PLAYBACK_SPEEDS || [1, 2, 4];
 
 const $ = selector => document.querySelector(selector);
@@ -21,6 +22,8 @@ let playerFetchControllers = new Set();
 let allPlayers = [];
 let pistolRounds = [];
 let pistolPlayer = null;
+let heatmapRounds = [];
+let heatmapPlayer = null;
 let nextColor = 0;
 let currentSide = "CT";
 let serverFailures = [];
@@ -536,6 +539,8 @@ function resetResults() {
   allPlayers = [];
   pistolRounds = [];
   pistolPlayer = null;
+  heatmapRounds = [];
+  heatmapPlayer = null;
   nextColor = 0;
   serverFailures = [];
   uiFailures = new Map();
@@ -545,6 +550,7 @@ function resetResults() {
   const toolbar = $("#view-toolbar");
   const legend = $("#pistol-legend");
   const pistol = $("#pistol");
+  const heatmap = $("#heatmap");
   const empty = $("#empty-state");
   if (cards) cards.replaceChildren();
   if (switcher) {
@@ -554,6 +560,7 @@ function resetResults() {
   if (toolbar) toolbar.hidden = true;
   if (legend) legend.replaceChildren();
   if (pistol) pistol.hidden = true;
+  if (heatmap) heatmap.hidden = true;
   if (empty) empty.hidden = false;
   replayClock.setElapsed(0);
   setSide("CT");
@@ -724,6 +731,30 @@ function ensurePistolPlayer(data) {
   viewManager.addSideTarget(pistolPlayer, "Pistol");
 }
 
+function ensureHeatmapPlayer(data) {
+  if (heatmapPlayer) return;
+  const canvas = $("#heatmap-canvas");
+  const panel = $("#heatmap");
+  if (!canvas) throw new Error("页面缺少热力图画布");
+  if (!panel) throw new Error("页面缺少热力图面板");
+  const player = createHeatmap(canvas, {
+    radar: data.radar,
+    transform: data.transform,
+    rounds: heatmapRounds,
+    side: currentSide,
+    rtype: "Buy"
+  });
+  try {
+    registerReplayView("heatmap", "热力图（全员）", panel, player, "#ff6b6b");
+  } catch (error) {
+    player.destroy();
+    throw error;
+  }
+  heatmapPlayer = player;
+  allPlayers.push(heatmapPlayer);
+  viewManager.addSideTarget(heatmapPlayer, "Buy");
+}
+
 function addLegendItem(username, color) {
   const legend = $("#pistol-legend");
   if (!legend) return;
@@ -819,6 +850,7 @@ async function addPlayer(result, epoch = pollEpoch) {
     });
     try {
       ensurePistolPlayer(data);
+      ensureHeatmapPlayer(data);
       const cards = $("#cards");
       if (!cards) throw new Error("页面缺少玩家卡片容器");
       cards.appendChild(buyCard);
@@ -843,11 +875,28 @@ async function addPlayer(result, epoch = pollEpoch) {
         registerReplayView(`pistol:${domain}`, `${username} 手枪局`, pistolCard, perPlayerPistol, color, `${username} 手枪局`);
       }
 
+      // Per-player density heatmap
+      const { card: heatCard, canvas: heatCanvas } = buildPlayerCard(data, username, color, "热力图");
+      heatCard.id = `heat-${domain}`;
+      const heatPlayer = createHeatmap(heatCanvas, {
+        radar: data.radar,
+        transform: data.transform,
+        rounds: data.rounds,
+        side: currentSide,
+        rtype: "Buy"
+      });
+      cards.appendChild(heatCard);
+      allPlayers.push(heatPlayer);
+      viewManager.addSideTarget(heatPlayer, "Buy");
+      registerReplayView(`heat:${domain}`, `${username} 热力图`, heatCard, heatPlayer, color, `${username} 热力图`);
+
       players.set(domain, { data, buyPlayer, color });
 
       for (const round of data.rounds) {
         if (round && round.rtype === "Pistol") pistolRounds.push({ ...round, color });
+        if (round && round.rtype === "Buy") heatmapRounds.push({ ...round });
       }
+      if (heatmapPlayer) heatmapPlayer.markDirty();
       addLegendItem(username, color);
       uiFailures.delete(username);
       drawAll();

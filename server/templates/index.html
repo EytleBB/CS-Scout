@@ -700,6 +700,13 @@
       <div id="pistol-legend" class="legend pistol-legend" aria-label="玩家颜色图例"></div>
       <canvas id="pistol-canvas" class="replay-canvas" aria-label="合并手枪局回放"></canvas>
      </section>
+     <section id="heatmap" class="card" aria-label="全员热力图" hidden>
+      <div class="card-heading">
+       <h2>热力图（全员）</h2>
+       <span class="buy-label">Heatmap</span>
+      </div>
+      <canvas id="heatmap-canvas" class="replay-canvas" aria-label="全员位置热力图"></canvas>
+     </section>
      <div id="cards"></div>
     </section>
    </div>
@@ -707,6 +714,7 @@
  </div>
  <script src="/static/replay-engine/engine.js"></script>
  <script src="/static/replay-engine/clock.js"></script>
+ <script src="/static/replay-engine/heatmap.js"></script>
  <script src="/static/replay.js"></script>
  <script src="/static/app.js"></script>
 </body>
