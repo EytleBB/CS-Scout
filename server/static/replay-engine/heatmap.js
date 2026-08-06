@@ -1,3 +1,4 @@
+(function() {
 // CS-Scout heatmap overlay engine. Renders position density on the radar
 // canvas. Two usage patterns:
 //   1. Per-player: pass one player's rounds to visualise their tendencies.
@@ -323,3 +324,4 @@ if (typeof window !== "undefined") {
   window.__replayEngine = window.__replayEngine || {};
   Object.assign(window.__replayEngine, _exports);
 }
+})();

@@ -2,6 +2,7 @@
 // that re-exports from static/replay-engine/. The original class-based API
 // (ReplayPlayer) is preserved so existing code and tests continue to work
 // while new code should prefer createReplay() from the engine module.
+(function() {
 "use strict";
 
 const engine = typeof require === "function"
@@ -68,7 +69,6 @@ class ReplayPlayer {
 
 // Expose to global scope when loaded as a <script> tag in the browser.
 if (typeof window !== "undefined") {
-  window.__replayEngine = engine;
   window.ReplayPlayer = ReplayPlayer;
   window.PLAYBACK_S = PLAYBACK_S;
   window.WINDOW_S = WINDOW_S;
@@ -83,3 +83,4 @@ if (typeof module !== "undefined") {
     grenadeIcon, tintedGrenadeAsset, finiteNumber, validSample
   };
 }
+})();

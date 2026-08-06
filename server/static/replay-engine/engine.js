@@ -1,6 +1,7 @@
 // CS-Scout canvas replay engine core. One external clock drives every instance.
 // Twenty seconds of game time are shown on a ten-second loop. Player trails are
 // intentionally not persisted between frames.
+(function() {
 "use strict";
 
 const PLAYBACK_S = 10;
@@ -145,7 +146,8 @@ function createReplay(canvas, options = {}) {
     else state.disabled.add(roundId);
   }
 
-  // Interpolate a [[t,x,y], ...] series. `holdLast` is useful for death
+  // Interpolate a [[t,x,y,...], ...] series. Returns all elements from index 1
+  // onwards (e.g. [x, y] or [x, y, yaw]). `holdLast` is useful for death
   // markers and grenade heads, while live players disappear after their final
   // position sample.
   function _interp(series, gameTime, holdLast = false) {
@@ -156,7 +158,7 @@ function createReplay(canvas, options = {}) {
       if (previous === null) {
         previous = sample;
         if (gameTime < sample[0]) return null;
-        if (gameTime === sample[0]) return [sample[1], sample[2]];
+        if (gameTime === sample[0]) return sample.slice(1);
         continue;
       }
       if (sample[0] <= previous[0]) {
@@ -166,14 +168,17 @@ function createReplay(canvas, options = {}) {
       if (gameTime <= sample[0]) {
         const fraction = Math.max(0, Math.min(1,
           (gameTime - previous[0]) / (sample[0] - previous[0])));
-        return [
-          previous[1] + (sample[1] - previous[1]) * fraction,
-          previous[2] + (sample[2] - previous[2]) * fraction
-        ];
+        const result = [];
+        for (let i = 1; i < sample.length; i++) {
+          const prevVal = previous[i] || 0;
+          const currVal = sample[i] || 0;
+          result.push(prevVal + (currVal - prevVal) * fraction);
+        }
+        return result;
       }
       previous = sample;
     }
-    if (previous && (holdLast || gameTime === previous[0])) return [previous[1], previous[2]];
+    if (previous && (holdLast || gameTime === previous[0])) return previous.slice(1);
     return null;
   }
 
@@ -237,15 +242,24 @@ function createReplay(canvas, options = {}) {
       const position = _interp(path, gameTime);
       const pixel = position && g2p(position[0], position[1]);
       if (!pixel) continue;
-      const velocity = _velocityAt(path, gameTime);
-      if (velocity) {
-        const scale = state.transform.scale;
-        const vx = velocity[0] / scale;
-        const vy = -velocity[1] / scale;
-        if (finiteNumber(vx) && finiteNumber(vy) && Math.hypot(vx, vy) > 0.5) {
-          _drawArrow(pixel[0], pixel[1], Math.atan2(vy, vx), color);
+      // Use real view yaw when available (sample[3] in [t, x, y, yaw]).
+      // CS2 yaw: 0=north(+Y), 90=east(+X), clockwise. Canvas: 0=right(+X),
+      // π/2=down(+Y canvas). Conversion: canvas_angle = (yaw - 90) * π / 180.
+      let arrowAngle = null;
+      if (position.length >= 3 && finiteNumber(position[2])) {
+        arrowAngle = (position[2] - 90) * Math.PI / 180;
+      } else {
+        const velocity = _velocityAt(path, gameTime);
+        if (velocity) {
+          const scale = state.transform.scale;
+          const vx = velocity[0] / scale;
+          const vy = -velocity[1] / scale;
+          if (finiteNumber(vx) && finiteNumber(vy) && Math.hypot(vx, vy) > 0.5) {
+            arrowAngle = Math.atan2(vy, vx);
+          }
         }
       }
+      if (arrowAngle !== null) _drawArrow(pixel[0], pixel[1], arrowAngle, color);
       c.save();
       c.globalAlpha = 0.86;
       c.fillStyle = color;
@@ -448,3 +462,4 @@ if (typeof window !== "undefined") {
   window.__replayEngine = window.__replayEngine || {};
   Object.assign(window.__replayEngine, _exports);
 }
+})();

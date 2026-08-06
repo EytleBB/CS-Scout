@@ -2,6 +2,7 @@
 // requestAnimationFrame loop that calls draw on the active view. The view
 // manager handles button-style panel switching so only one replay is visible
 // at a time.
+(function() {
 "use strict";
 
 const PLAYBACK_SPEEDS = [1, 2, 4];
@@ -229,3 +230,4 @@ if (typeof window !== "undefined") {
   window.__replayEngine = window.__replayEngine || {};
   Object.assign(window.__replayEngine, _exports);
 }
+})();

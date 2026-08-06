@@ -1,11 +1,32 @@
 "use strict";
 
 // Load the replay engine modules. In Node, require() resolves the bundled
-// index. In the browser, engine.js + clock.js load first and populate
-// window.__replayEngine before this script runs.
+// index. In the browser, engine.js + clock.js + heatmap.js load first and
+// populate window.__replayEngine before this script runs.
+(function() {
 const engine = typeof require === "function"
   ? require("./replay-engine/")
   : (typeof window !== "undefined" && window.__replayEngine ? window.__replayEngine : {});
+
+// Diagnose missing engine modules - display a visible error if the engine
+// failed to load, rather than silently breaking the entire page.
+if (typeof document !== "undefined") {
+  const missing = [];
+  if (!engine.createReplay) missing.push("createReplay");
+  if (!engine.createClock) missing.push("createClock");
+  if (!engine.createViewManager) missing.push("createViewManager");
+  if (!engine.createHeatmap) missing.push("createHeatmap");
+  if (missing.length > 0) {
+    document.addEventListener("DOMContentLoaded", () => {
+      const banner = document.createElement("div");
+      banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;padding:12px 20px;background:#ff4444;color:#fff;font:14px monospace";
+      banner.textContent = "CS-Scout engine load error: missing " + missing.join(", ")
+        + " from window.__replayEngine (keys: " + Object.keys(engine).join(", ") + ")";
+      document.body.appendChild(banner);
+    }, { once: true });
+  }
+}
+
 const createReplay = engine.createReplay;
 const createClock = engine.createClock;
 const createViewManager = engine.createViewManager;
@@ -1020,3 +1041,4 @@ if (typeof module !== "undefined") {
     inspectLocalDemos, runLocalDemoAnalysis,
   };
 }
+})();
