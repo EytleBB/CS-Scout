@@ -129,9 +129,9 @@ class ReplayPlayer {
     else this.disabled.add(roundId);
   }
 
-  // Interpolate a [[t,x,y], ...] series. `holdLast` is useful for death
-  // markers and grenade heads, while live players disappear after their final
-  // position sample.
+  // Interpolate a [[t,x,y(,yaw)], ...] series. Returns [x, y] (or [x, y, yaw]
+  // when the series carries yaw). `holdLast` is useful for death markers and
+  // grenade heads, while live players disappear after their final position.
   _interp(series, gameTime, holdLast = false) {
     if (!Array.isArray(series) || !finiteNumber(gameTime)) return null;
     let previous = null;
@@ -140,7 +140,7 @@ class ReplayPlayer {
       if (previous === null) {
         previous = sample;
         if (gameTime < sample[0]) return null;
-        if (gameTime === sample[0]) return [sample[1], sample[2]];
+        if (gameTime === sample[0]) return sample.slice(1);
         continue;
       }
       if (sample[0] <= previous[0]) {
@@ -150,14 +150,23 @@ class ReplayPlayer {
       if (gameTime <= sample[0]) {
         const fraction = Math.max(0, Math.min(1,
           (gameTime - previous[0]) / (sample[0] - previous[0])));
-        return [
+        const result = [
           previous[1] + (sample[1] - previous[1]) * fraction,
           previous[2] + (sample[2] - previous[2]) * fraction
         ];
+        // Yaw is circular; don't interpolate across wrap-around.
+        if (previous.length >= 4 && sample.length >= 4 &&
+            finiteNumber(previous[3]) && finiteNumber(sample[3]) &&
+            Math.abs(sample[3] - previous[3]) < 180) {
+          result.push(previous[3] + (sample[3] - previous[3]) * fraction);
+        } else if (previous.length >= 4 && finiteNumber(previous[3])) {
+          result.push(previous[3]);
+        }
+        return result;
       }
       previous = sample;
     }
-    if (previous && (holdLast || gameTime === previous[0])) return [previous[1], previous[2]];
+    if (previous && (holdLast || gameTime === previous[0])) return previous.slice(1);
     return null;
   }
 
@@ -221,15 +230,23 @@ class ReplayPlayer {
       const position = this._interp(path, gameTime);
       const pixel = position && this.g2p(position[0], position[1]);
       if (!pixel) continue;
-      const velocity = this._velocityAt(path, gameTime);
-      if (velocity) {
-        const scale = this.transform.scale;
-        const vx = velocity[0] / scale;
-        const vy = -velocity[1] / scale;
-        if (finiteNumber(vx) && finiteNumber(vy) && Math.hypot(vx, vy) > 0.5) {
-          this._drawArrow(pixel[0], pixel[1], Math.atan2(vy, vx), color);
+      // Yaw ≈ atan2(dy, dx) in game coords (measured from demo data). Radar
+      // flips Y, so canvas_angle = -atan2(dy, dx) = -yaw.
+      let arrowAngle = null;
+      if (position.length >= 3 && finiteNumber(position[2])) {
+        arrowAngle = -position[2] * Math.PI / 180;
+      } else {
+        const velocity = this._velocityAt(path, gameTime);
+        if (velocity) {
+          const scale = this.transform.scale;
+          const vx = velocity[0] / scale;
+          const vy = -velocity[1] / scale;
+          if (finiteNumber(vx) && finiteNumber(vy) && Math.hypot(vx, vy) > 0.5) {
+            arrowAngle = Math.atan2(vy, vx);
+          }
         }
       }
+      if (arrowAngle !== null) this._drawArrow(pixel[0], pixel[1], arrowAngle, color);
       ctx.save();
       ctx.globalAlpha = 0.86;
       ctx.fillStyle = color;
