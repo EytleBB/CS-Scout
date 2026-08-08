@@ -16,21 +16,23 @@ const validSample = _engine.validSample || (s =>
   Array.isArray(s) && s.length >= 3 && finiteNumber(s[0]) && finiteNumber(s[1]) && finiteNumber(s[2]));
 
 // Radius of each density blob in canvas pixels.
-const HEATMAP_RADIUS = 25;
+const HEATMAP_RADIUS = 18;
 // Minimum pixel distance between consecutive samples to avoid over-sampling
 // slow or stationary movement.
-const MIN_POINT_DISTANCE = 3;
+const MIN_POINT_DISTANCE = 4;
+// Per-point gradient alpha - lower values require more overlap to reach red.
+const POINT_ALPHA = 0.12;
 
 // Colour gradient: [position, r, g, b, a]
 const HEATMAP_GRADIENT = [
   [0.00,   0,   0,   0,   0],
-  [0.10,   0,   0, 180,  60],
-  [0.25,   0,  60, 255, 110],
-  [0.45,   0, 200, 180, 150],
-  [0.60, 180, 255,   0, 175],
-  [0.75, 255, 220,   0, 200],
-  [0.90, 255, 120,   0, 220],
-  [1.00, 255,  30,   0, 240]
+  [0.20,   0,   0, 180,  50],
+  [0.40,   0, 100, 255, 100],
+  [0.60,   0, 220, 120, 140],
+  [0.75, 200, 255,   0, 170],
+  [0.88, 255, 200,   0, 195],
+  [0.95, 255, 120,   0, 215],
+  [1.00, 255,  30,   0, 235]
 ];
 
 /**
@@ -190,7 +192,7 @@ function createHeatmap(canvas, options = {}) {
     offCtx.globalCompositeOperation = "lighter";
     for (const [x, y] of points) {
       const grad = offCtx.createRadialGradient(x, y, 0, x, y, HEATMAP_RADIUS);
-      grad.addColorStop(0, "rgba(255,255,255,0.25)");
+      grad.addColorStop(0, `rgba(255,255,255,${POINT_ALPHA})`);
       grad.addColorStop(1, "rgba(255,255,255,0)");
       offCtx.fillStyle = grad;
       offCtx.beginPath();
@@ -198,28 +200,40 @@ function createHeatmap(canvas, options = {}) {
       offCtx.fill();
     }
 
-    // Map accumulated alpha to heatmap colours.
+    // Map accumulated alpha to heatmap colours using 95th-percentile
+    // normalisation so a few hot spots do not push everything into red.
     try {
       const imageData = offCtx.getImageData(0, 0, w, h);
       const data = imageData.data;
-      let maxAlpha = 0;
+      const histogram = new Array(256).fill(0);
+      let totalPixels = 0;
       for (let i = 3; i < data.length; i += 4) {
-        if (data[i] > maxAlpha) maxAlpha = data[i];
+        if (data[i] > 0) { histogram[data[i]]++; totalPixels++; }
       }
-      if (maxAlpha > 0) {
-        for (let i = 0; i < data.length; i += 4) {
-          const alpha = data[i + 3];
-          if (alpha === 0) continue;
-          const [r, g, b, a] = heatColor(alpha / maxAlpha);
-          data[i] = r;
-          data[i + 1] = g;
-          data[i + 2] = b;
-          data[i + 3] = a;
+      if (totalPixels > 0) {
+        const target = totalPixels * 0.95;
+        let cumulative = 0;
+        let normAlpha = 255;
+        for (let i = 1; i < 256; i++) {
+          cumulative += histogram[i];
+          if (cumulative >= target) { normAlpha = i; break; }
         }
-        offCtx.putImageData(imageData, 0, 0);
+        if (normAlpha > 0) {
+          for (let i = 0; i < data.length; i += 4) {
+            const alpha = data[i + 3];
+            if (alpha === 0) continue;
+            const t = Math.min(1, alpha / normAlpha);
+            const [r, g, b, a] = heatColor(t);
+            data[i] = r;
+            data[i + 1] = g;
+            data[i + 2] = b;
+            data[i + 3] = a;
+          }
+          offCtx.putImageData(imageData, 0, 0);
+        }
       }
     } catch (_e) {
-      // getImageData not available — leave the white gradient as-is.
+      // getImageData not available - leave as-is.
     }
     return off;
   }

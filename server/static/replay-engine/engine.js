@@ -243,11 +243,11 @@ function createReplay(canvas, options = {}) {
       const pixel = position && g2p(position[0], position[1]);
       if (!pixel) continue;
       // Use real view yaw when available (sample[3] in [t, x, y, yaw]).
-      // CS2 yaw: 0=north(+Y), 90=east(+X), clockwise. Canvas: 0=right(+X),
-      // π/2=down(+Y canvas). Conversion: canvas_angle = (yaw - 90) * π / 180.
+      // Empirically: yaw ≈ atan2(dy, dx) in game coords. Radar flips Y,
+      // so canvas_angle = atan2(-dy, dx) = -atan2(dy, dx) = -yaw.
       let arrowAngle = null;
       if (position.length >= 3 && finiteNumber(position[2])) {
-        arrowAngle = (position[2] - 90) * Math.PI / 180;
+        arrowAngle = -position[2] * Math.PI / 180;
       } else {
         const velocity = _velocityAt(path, gameTime);
         if (velocity) {

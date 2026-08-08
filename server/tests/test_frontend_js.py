@@ -855,9 +855,9 @@ if (JSON.stringify(cNeg) !== JSON.stringify(c0)) throw new Error("negative t not
 const cOver = heatColor(1.5);
 if (JSON.stringify(cOver) !== JSON.stringify(c1)) throw new Error("t > 1 not clamped to 1");
 
-// Midpoint should be between green and yellow stops.
+// Midpoint should be in the green-blue range (high g, some b).
 const cMid = heatColor(0.6);
-if (cMid[0] < 100 || cMid[1] < 100) throw new Error("midpoint colour unexpectedly dark: " + JSON.stringify(cMid));
+if (cMid[1] < 100) throw new Error("midpoint colour unexpectedly dark: " + JSON.stringify(cMid));
 
 // Monotonic alpha increase (not strictly, but general upward trend).
 const alphaAt = t => heatColor(t)[3];
