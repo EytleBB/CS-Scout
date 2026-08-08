@@ -1,5 +1,38 @@
 "use strict";
 
+// Load the replay engine modules. In Node, require() resolves the bundled
+// index. In the browser, engine.js + clock.js + heatmap.js load first and
+// populate window.__replayEngine before this script runs.
+(function() {
+const engine = typeof require === "function"
+  ? require("./replay-engine/")
+  : (typeof window !== "undefined" && window.__replayEngine ? window.__replayEngine : {});
+
+// Diagnose missing engine modules - display a visible error if the engine
+// failed to load, rather than silently breaking the entire page.
+if (typeof document !== "undefined") {
+  const missing = [];
+  if (!engine.createReplay) missing.push("createReplay");
+  if (!engine.createClock) missing.push("createClock");
+  if (!engine.createViewManager) missing.push("createViewManager");
+  if (!engine.createHeatmap) missing.push("createHeatmap");
+  if (missing.length > 0) {
+    document.addEventListener("DOMContentLoaded", () => {
+      const banner = document.createElement("div");
+      banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;padding:12px 20px;background:#ff4444;color:#fff;font:14px monospace";
+      banner.textContent = "CS-Scout engine load error: missing " + missing.join(", ")
+        + " from window.__replayEngine (keys: " + Object.keys(engine).join(", ") + ")";
+      document.body.appendChild(banner);
+    }, { once: true });
+  }
+}
+
+const createReplay = engine.createReplay;
+const createClock = engine.createClock;
+const createViewManager = engine.createViewManager;
+const createHeatmap = engine.createHeatmap;
+const PLAYBACK_SPEEDS = engine.PLAYBACK_SPEEDS || [1, 2, 4];
+
 const $ = selector => document.querySelector(selector);
 const PLAYER_COLORS = ["#ef6aa8", "#55c8ff", "#ffd166", "#63d297", "#b59cff"];
 
@@ -8,11 +41,10 @@ let loadingDomains = new Set();
 let playerLoadAttempts = new Map();
 let playerFetchControllers = new Set();
 let allPlayers = [];
-let sideTargets = [];
-let replayViews = new Map();
-let activeViewKey = null;
 let pistolRounds = [];
 let pistolPlayer = null;
+let heatmapRounds = [];
+let heatmapPlayer = null;
 let nextColor = 0;
 let currentSide = "CT";
 let serverFailures = [];
@@ -31,44 +63,162 @@ let publicMonitoringEnabled = false;
 // storage. Browser extensions and password managers still apply their own
 // form-handling policies.
 let accessKey = "";
+let localDemoSessionId = "";
+let localDemoPlayers = [];
+let localDemoFiles = [];
 
-const PLAYBACK_SPEEDS = [1, 2, 4];
-const clock = { elapsed: 0, playing: true, speed: 2, last: null, raf: null };
+// --- Engine instances -------------------------------------------------------
+// The clock drives a single requestAnimationFrame loop that draws the active
+// view. The view manager handles button-style panel switching so only one
+// replay canvas is visible at a time.
+const replayClock = createClock({
+  playbackS: engine.PLAYBACK_S || 10,
+  windowS: engine.WINDOW_S || 20,
+  onTick: gameTime => drawAll(gameTime),
+  onControlsUpdate: updateClockControls
+});
 
-function localAnalysisEnabled() {
-  return Boolean(document.body && document.body.dataset &&
-    document.body.dataset.localAnalysis === "true");
-}
+// View manager lazily resolves DOM elements via the provider function so it
+// can be created at module load time before the DOM is ready.
+const viewManager = createViewManager(() => ({
+  switcher: $("#view-switcher"),
+  toolbar: $("#view-toolbar"),
+  emptyState: $("#empty-state")
+}));
+
+// --- Clock wrappers (exported for test compatibility) -----------------------
 
 function playbackSeconds() {
-  return typeof PLAYBACK_S === "number" && PLAYBACK_S > 0 ? PLAYBACK_S : 10;
+  return replayClock.playbackSeconds();
 }
 
 function windowSeconds() {
-  return typeof WINDOW_S === "number" && WINDOW_S > 0 ? WINDOW_S : 20;
+  return replayClock.windowSeconds();
 }
 
 function currentGameTime() {
-  return clock.elapsed / playbackSeconds() * windowSeconds();
+  return replayClock.getGameTime();
 }
 
-function playbackElapsedDelta(realSeconds, speed = clock.speed) {
-  const seconds = Number(realSeconds);
-  const rate = Number(speed);
-  if (!Number.isFinite(seconds) || seconds < 0 || !PLAYBACK_SPEEDS.includes(rate)) return 0;
-  return seconds * rate * playbackSeconds() / windowSeconds();
+function playbackElapsedDelta(realSeconds, speed) {
+  return replayClock.playbackElapsedDelta(realSeconds, speed);
+}
+
+// --- View management wrappers (exported for test compatibility) ------------
+
+function activateReplayView(viewKey) {
+  viewManager.activate(viewKey);
+  drawAll();
+}
+
+function registerReplayView(viewKey, label, panel, player, color = "", accessibleLabel = label) {
+  return viewManager.register(viewKey, label, panel, player, color, accessibleLabel);
+}
+
+function drawAll(gameTime = currentGameTime()) {
+  viewManager.drawActive(gameTime);
+}
+
+// --- Drawing / clock control updates ---------------------------------------
+
+function updateClockControls() {
+  const scrub = $("#scrub");
+  const label = $("#timelbl");
+  const button = $("#playpause");
+  if (scrub && document.activeElement !== scrub) {
+    scrub.value = String(Math.round(replayClock.getElapsed() / playbackSeconds() * 1000));
+  }
+  if (label) label.textContent = `${currentGameTime().toFixed(1)} / ${windowSeconds().toFixed(1)}s`;
+  if (button) {
+    const playing = replayClock.isPlaying();
+    button.textContent = playing ? "⏸" : "▶";
+    button.title = playing ? "暂停" : "播放";
+    button.setAttribute("aria-label", playing ? "暂停回放" : "播放回放");
+  }
 }
 
 function setPlaybackSpeed(speed) {
   const rate = Number(speed);
   if (!PLAYBACK_SPEEDS.includes(rate)) return;
-  clock.speed = rate;
-  clock.last = null;
+  replayClock.setSpeed(rate);
   for (const button of document.querySelectorAll("[data-playback-speed]")) {
     const active = Number(button.dataset.playbackSpeed) === rate;
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", String(active));
   }
+}
+
+function setSide(side) {
+  if (side !== "CT" && side !== "T") return;
+  currentSide = side;
+  const ct = $("#side-ct");
+  const t = $("#side-t");
+  if (ct) {
+    const active = side === "CT";
+    ct.classList.toggle("active", active);
+    ct.setAttribute("aria-pressed", String(active));
+  }
+  if (t) {
+    const active = side === "T";
+    t.classList.toggle("active", active);
+    t.setAttribute("aria-pressed", String(active));
+  }
+  viewManager.setSide(side);
+  drawAll();
+}
+
+// --- Business logic ---------------------------------------------------------
+
+function localDemoReady() {
+  return activePlatform === "localdemos" && Boolean(localDemoSessionId);
+}
+
+function getSelectedSteamids() {
+  return Array.from(document.querySelectorAll("#local-demo-players input:checked"))
+    .map(cb => cb.value);
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value < 0) return "?";
+  if (value < 1024 * 1024) return `${Math.round(value / 1024)} KiB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MiB`;
+  return `${(value / 1024 / 1024 / 1024).toFixed(2)} GiB`;
+}
+
+function updateLocalDemoFileList(serverFiles = null) {
+  const list = $("#local-demo-file-list");
+  if (!list) return;
+  list.replaceChildren();
+  const files = Array.isArray(serverFiles) ? serverFiles : localDemoFiles;
+  for (const file of files) {
+    const item = document.createElement("div");
+    item.textContent = `${String(file.name || "Demo")} ? ${formatBytes(file.size)}`;
+    list.appendChild(item);
+  }
+  if (!files.length) list.textContent = "No Demo files selected";
+}
+
+function updateLocalDemoRunButton() {
+  const runButton = $("#run");
+  if (!runButton || activePlatform !== "localdemos") return;
+  runButton.disabled = analysisBusy || !localDemoReady();
+}
+
+function resetLocalDemoState() {
+  localDemoSessionId = "";
+  localDemoPlayers = [];
+  const info = $("#local-demo-info");
+  if (info) info.hidden = true;
+  const map = $("#local-demo-map");
+  if (map) map.textContent = "";
+  const list = $("#local-demo-players");
+  if (list) list.replaceChildren();
+  updateLocalDemoRunButton();
+}
+function localAnalysisEnabled() {
+  return Boolean(document.body && document.body.dataset &&
+    document.body.dataset.localAnalysis === "true");
 }
 
 function setAnalysisMode(mode) {
@@ -87,7 +237,8 @@ function setAnalysisBusy(busy) {
   const runButton = $("#run");
   if (runButton) {
     runButton.disabled = disabled ||
-      (activePlatform === "perfectworld" && !pwaCanAnalyze);
+      (activePlatform === "perfectworld" && !pwaCanAnalyze) ||
+      (activePlatform === "localdemos" && !localDemoReady());
   }
   for (const button of document.querySelectorAll("[data-analysis-mode]")) {
     button.disabled = disabled;
@@ -97,29 +248,39 @@ function setAnalysisBusy(busy) {
   }
   const depth = $("#depth");
   if (depth && activePlatform === "perfectworld") depth.disabled = disabled;
+  const fileInput = $("#local-demo-files");
+  if (fileInput) fileInput.disabled = disabled;
+  const inspectButton = $("#local-demo-inspect");
+  if (inspectButton) inspectButton.disabled = disabled || localDemoFiles.length === 0;
+  updateLocalDemoRunButton();
 }
 
 function updatePlatformControls() {
   const perfectWorld = activePlatform === "perfectworld";
+  const localDemos = activePlatform === "localdemos";
   for (const button of document.querySelectorAll("[data-platform]")) {
     const active = button.dataset.platform === activePlatform;
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", String(active));
   }
   for (const section of document.querySelectorAll("[data-five-e-only]")) {
-    section.hidden = perfectWorld;
+    section.hidden = perfectWorld || localDemos;
   }
   const hint = $("#pwa-hint");
+  for (const section of document.querySelectorAll("[data-local-demos-only]")) {
+    section.hidden = !localDemos;
+  }
+  updateLocalDemoFileList();
   if (hint) hint.hidden = !perfectWorld;
   const mapSelect = $("#map");
-  if (mapSelect) mapSelect.disabled = perfectWorld || availableMapNames.length === 0;
+  if (mapSelect) mapSelect.disabled = perfectWorld || localDemos || availableMapNames.length === 0;
   const playerLabel = $("#player-input-label");
   if (playerLabel) playerLabel.textContent = perfectWorld ? "完美平台用户名" : "5E 用户名";
   for (let index = 0; index < 5; index += 1) {
     const input = $(`#u${index}`);
     if (!input) continue;
-    input.readOnly = perfectWorld;
-    input.setAttribute("aria-readonly", String(perfectWorld));
+    input.readOnly = perfectWorld || localDemos;
+    input.setAttribute("aria-readonly", String(perfectWorld || localDemos));
     input.setAttribute(
       "aria-label",
       perfectWorld ? `完美平台用户名 ${index + 1}` :
@@ -131,6 +292,10 @@ function updatePlatformControls() {
   const runButton = $("#run");
   if (runButton) runButton.textContent = perfectWorld ? "开始分析" : "开始扫描";
   const emptyTitle = $("#empty-title");
+  if (runButton && localDemos) runButton.textContent = "Start parsing";
+  updateLocalDemoRunButton();
+  if (localDemos) setStatus("Select local Demos, inspect them, then choose a player.");
+  if (!localDemos) resetLocalDemoState();
   const emptyDescription = $("#empty-description");
   if (emptyTitle) emptyTitle.textContent = perfectWorld ? "等待进入完美平台对局" : "等待扫描数据";
   if (emptyDescription) {
@@ -168,8 +333,8 @@ async function configurePerfectWorld() {
 
 async function setPlatform(platform) {
   if (analysisBusy) return;
-  if (platform !== "5e" && platform !== "perfectworld") return;
-  if (activePlatform === "5e" && platform === "perfectworld") {
+  if (platform !== "5e" && platform !== "perfectworld" && platform !== "localdemos") return;
+  if (activePlatform === "5e" && platform !== "5e") {
     fiveEUsernames = Array.from({ length: 5 }, (_item, index) => {
       const input = $(`#u${index}`);
       return input ? input.value : "";
@@ -177,6 +342,7 @@ async function setPlatform(platform) {
   }
   activePlatform = platform;
   pwaCanAnalyze = false;
+  if (platform === "localdemos") resetLocalDemoState();
   if (platform === "perfectworld") showPerfectWorldTargets([]);
   pollEpoch += 1;
   const epoch = pollEpoch;
@@ -185,7 +351,9 @@ async function setPlatform(platform) {
   resetResults();
   updatePlatformControls();
   setAnalysisBusy(false);
-  if (platform === "perfectworld") {
+  if (platform === "localdemos") {
+    setStatus("Select local Demos, inspect them, then choose a player.");
+  } else if (platform === "perfectworld") {
     setStatus("正在连接完美平台自动侦察…");
     try {
       await configurePerfectWorld();
@@ -218,63 +386,6 @@ async function runPerfectWorldAnalysis() {
   }
 }
 
-function drawAll(gameTime = currentGameTime()) {
-  const activeView = replayViews.get(activeViewKey);
-  if (!activeView || !activeView.player) return;
-  try {
-    activeView.player.drawAt(gameTime);
-  } catch (error) {
-    // A malformed player payload must not stop the shared animation clock.
-    console.error("Replay draw failed", error);
-  }
-}
-
-function updateClockControls() {
-  const scrub = $("#scrub");
-  const label = $("#timelbl");
-  const button = $("#playpause");
-  if (scrub && document.activeElement !== scrub) {
-    scrub.value = String(Math.round(clock.elapsed / playbackSeconds() * 1000));
-  }
-  if (label) label.textContent = `${currentGameTime().toFixed(1)} / ${windowSeconds().toFixed(1)}s`;
-  if (button) {
-    button.textContent = clock.playing ? "⏸" : "▶";
-    button.title = clock.playing ? "暂停" : "播放";
-    button.setAttribute("aria-label", clock.playing ? "暂停回放" : "播放回放");
-  }
-}
-
-function tick(timestamp) {
-  if (clock.last === null) clock.last = timestamp;
-  const delta = Math.max(0, Math.min((timestamp - clock.last) / 1000, 1));
-  clock.last = timestamp;
-  if (clock.playing) {
-    clock.elapsed = (clock.elapsed + playbackElapsedDelta(delta)) % playbackSeconds();
-  }
-  drawAll();
-  updateClockControls();
-  clock.raf = requestAnimationFrame(tick);
-}
-
-function setSide(side) {
-  if (side !== "CT" && side !== "T") return;
-  currentSide = side;
-  const ct = $("#side-ct");
-  const t = $("#side-t");
-  if (ct) {
-    const active = side === "CT";
-    ct.classList.toggle("active", active);
-    ct.setAttribute("aria-pressed", String(active));
-  }
-  if (t) {
-    const active = side === "T";
-    t.classList.toggle("active", active);
-    t.setAttribute("aria-pressed", String(active));
-  }
-  for (const { player, rtype } of sideTargets) player.setFilter(side, rtype);
-  drawAll();
-}
-
 function wireControls() {
   const playPause = $("#playpause");
   const scrub = $("#scrub");
@@ -285,18 +396,14 @@ function wireControls() {
   const platformButtons = document.querySelectorAll("[data-platform]");
   if (playPause) {
     playPause.addEventListener("click", () => {
-      clock.playing = !clock.playing;
-      clock.last = null;
+      replayClock.setPlaying(!replayClock.isPlaying());
       updateClockControls();
     });
   }
   if (scrub) {
     scrub.addEventListener("input", event => {
       const value = Number(event.target.value);
-      if (!Number.isFinite(value)) return;
-      clock.playing = false;
-      clock.elapsed = Math.max(0, Math.min(value, 1000)) / 1000 * playbackSeconds();
-      clock.last = null;
+      replayClock.seek(value);
       drawAll();
       updateClockControls();
     });
@@ -312,10 +419,21 @@ function wireControls() {
   for (const button of platformButtons) {
     button.addEventListener("click", () => { void setPlatform(button.dataset.platform); });
   }
-  setPlaybackSpeed(clock.speed);
+  const localFileInput = $("#local-demo-files");
+  if (localFileInput) {
+    localFileInput.addEventListener("change", () => {
+      localDemoFiles = localFileInput.files ? Array.from(localFileInput.files) : [];
+      resetLocalDemoState();
+      updateLocalDemoFileList();
+      setAnalysisBusy(false);
+    });
+  }
+  const localInspectButton = $("#local-demo-inspect");
+  if (localInspectButton) localInspectButton.addEventListener("click", () => { void inspectLocalDemos(); });
+  setPlaybackSpeed(replayClock.getSpeed());
   setAnalysisMode(analysisMode);
   updatePlatformControls();
-  document.addEventListener("visibilitychange", () => { clock.last = null; });
+  document.addEventListener("visibilitychange", () => { replayClock._raw.last = null; });
 }
 
 async function requestJSON(url, options) {
@@ -399,7 +517,7 @@ async function loadMaps() {
       option.textContent = String(mapName);
       select.appendChild(option);
     }
-    select.disabled = activePlatform === "perfectworld" || mapNames.length === 0;
+    select.disabled = activePlatform === "perfectworld" || activePlatform === "localdemos" || mapNames.length === 0;
     if (mapNames.length === 0) setStatus("没有可用地图，请先生成地图资源。");
   } catch (error) {
     availableMapNames = [];
@@ -430,47 +548,6 @@ function schedulePoll(epoch, delay = 2000) {
   pollTimer = setTimeout(() => poll(epoch), delay);
 }
 
-function activateReplayView(viewKey) {
-  if (!replayViews.has(viewKey)) return;
-  activeViewKey = viewKey;
-  for (const [key, view] of replayViews) {
-    const active = key === viewKey;
-    view.panel.hidden = !active;
-    view.button.classList.toggle("active", active);
-    view.button.setAttribute("aria-pressed", String(active));
-  }
-  drawAll();
-}
-
-function registerReplayView(viewKey, label, panel, player, color = "", accessibleLabel = label) {
-  if (replayViews.has(viewKey)) return replayViews.get(viewKey);
-  const switcher = $("#view-switcher");
-  const toolbar = $("#view-toolbar");
-  const empty = $("#empty-state");
-  if (!switcher || !panel || !player) throw new Error("页面缺少回放视图容器");
-
-  const button = document.createElement("button");
-  button.type = "button";
-  button.textContent = label;
-  button.title = label;
-  button.dataset.viewKey = viewKey;
-  button.setAttribute("aria-label", accessibleLabel);
-  button.setAttribute("aria-pressed", "false");
-  if (panel.id) button.setAttribute("aria-controls", panel.id);
-  if (color) button.style.setProperty("--view-color", color);
-  button.addEventListener("click", () => activateReplayView(viewKey));
-
-  panel.hidden = true;
-  switcher.appendChild(button);
-  const view = { panel, player, button };
-  replayViews.set(viewKey, view);
-  switcher.hidden = false;
-  if (toolbar) toolbar.hidden = false;
-  if (empty) empty.hidden = true;
-  if (activeViewKey === null) activateReplayView(viewKey);
-  return view;
-}
-
 function resetResults() {
   for (const controller of playerFetchControllers) controller.abort();
   for (const player of allPlayers) {
@@ -481,19 +558,20 @@ function resetResults() {
   playerLoadAttempts = new Map();
   playerFetchControllers = new Set();
   allPlayers = [];
-  sideTargets = [];
-  replayViews = new Map();
-  activeViewKey = null;
   pistolRounds = [];
   pistolPlayer = null;
+  heatmapRounds = [];
+  heatmapPlayer = null;
   nextColor = 0;
   serverFailures = [];
   uiFailures = new Map();
+  viewManager.reset();
   const cards = $("#cards");
   const switcher = $("#view-switcher");
   const toolbar = $("#view-toolbar");
   const legend = $("#pistol-legend");
   const pistol = $("#pistol");
+  const heatmap = $("#heatmap");
   const empty = $("#empty-state");
   if (cards) cards.replaceChildren();
   if (switcher) {
@@ -503,14 +581,105 @@ function resetResults() {
   if (toolbar) toolbar.hidden = true;
   if (legend) legend.replaceChildren();
   if (pistol) pistol.hidden = true;
+  if (heatmap) heatmap.hidden = true;
   if (empty) empty.hidden = false;
-  clock.elapsed = 0;
-  clock.last = null;
+  replayClock.setElapsed(0);
   setSide("CT");
   renderFailures();
 }
 
+async function inspectLocalDemos() {
+  const input = $("#local-demo-files");
+  if (!input || !input.files || input.files.length === 0) {
+    setStatus("Select one or more .dem files first.");
+    return;
+  }
+  localDemoFiles = Array.from(input.files);
+  localDemoSessionId = "";
+  localDemoPlayers = [];
+  setAnalysisBusy(true);
+  try {
+    const formData = new FormData();
+    for (const file of localDemoFiles) formData.append("demos", file, file.name);
+    const data = await requestJSON("/api/local-demos/inspect", {
+      method: "POST",
+      body: formData
+    });
+    localDemoSessionId = String(data.session_id || "");
+    localDemoPlayers = Array.isArray(data.players) ? data.players : [];
+    updateLocalDemoFileList(Array.isArray(data.files) ? data.files : null);
+    const map = $("#local-demo-map");
+    if (map) map.textContent = `Map: ${String(data.map || "unknown")} - ${localDemoFiles.length} files, ${localDemoPlayers.length} players`;
+    const list = $("#local-demo-players");
+    if (list) {
+      list.replaceChildren();
+      for (const player of localDemoPlayers) {
+        const label = document.createElement("label");
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.value = String(player.steamid || "");
+        cb.checked = true;
+        cb.addEventListener("change", updateLocalDemoRunButton);
+        const name = `${String(player.username || player.steamid)} (${player.appearances}/${localDemoFiles.length})`;
+        label.append(cb, document.createTextNode(name));
+        list.appendChild(label);
+      }
+    }
+    const info = $("#local-demo-info");
+    if (info) info.hidden = false;
+    updateLocalDemoRunButton();
+    setStatus(`Demo inspection complete: ${localDemoPlayers.length} players found.`);
+  } catch (error) {
+    resetLocalDemoState();
+    setStatus(`Demo inspection failed: ${error.message}`);
+  } finally {
+    setAnalysisBusy(false);
+  }
+}
+
+async function runLocalDemoAnalysis() {
+  if (!localDemoReady()) {
+    setStatus("Inspect the Demos first.");
+    return;
+  }
+  const steamids = getSelectedSteamids();
+  if (steamids.length === 0) {
+    setStatus("Select at least one player to analyze.");
+    return;
+  }
+  setAnalysisBusy(true);
+  try {
+    await requestJSON("/api/local-demos/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: localDemoSessionId, steamids })
+    });
+    lastKnownAnalysisRunning = true;
+    pollEpoch += 1;
+    clearPollTimer();
+    resetResults();
+    setStatus("Local Demo analysis started...");
+    await poll(pollEpoch);
+  } catch (error) {
+    if (error.status === 409) {
+      lastKnownAnalysisRunning = true;
+      pollEpoch += 1;
+      clearPollTimer();
+      resetResults();
+      setStatus("Another analysis is already running; restoring progress...");
+      await poll(pollEpoch);
+      return;
+    }
+    lastKnownAnalysisRunning = false;
+    setStatus(`Local Demo analysis failed: ${error.message}`);
+    setAnalysisBusy(false);
+  }
+}
 async function runAnalysis() {
+  if (activePlatform === "localdemos") {
+    await runLocalDemoAnalysis();
+    return;
+  }
   if (activePlatform === "perfectworld") {
     await runPerfectWorldAnalysis();
     return;
@@ -565,7 +734,7 @@ function ensurePistolPlayer(data) {
   const pistol = $("#pistol");
   if (!canvas) throw new Error("页面缺少合并手枪局画布");
   if (!pistol) throw new Error("页面缺少合并手枪局面板");
-  const player = new ReplayPlayer(canvas, {
+  const player = createReplay(canvas, {
     radar: data.radar,
     transform: data.transform,
     rounds: pistolRounds,
@@ -580,7 +749,31 @@ function ensurePistolPlayer(data) {
   }
   pistolPlayer = player;
   allPlayers.push(pistolPlayer);
-  sideTargets.push({ player: pistolPlayer, rtype: "Pistol" });
+  viewManager.addSideTarget(pistolPlayer, "Pistol");
+}
+
+function ensureHeatmapPlayer(data) {
+  if (heatmapPlayer) return;
+  const canvas = $("#heatmap-canvas");
+  const panel = $("#heatmap");
+  if (!canvas) throw new Error("页面缺少热力图画布");
+  if (!panel) throw new Error("页面缺少热力图面板");
+  const player = createHeatmap(canvas, {
+    radar: data.radar,
+    transform: data.transform,
+    rounds: heatmapRounds,
+    side: currentSide,
+    rtype: "Buy"
+  });
+  try {
+    registerReplayView("heatmap", "热力图（全员）", panel, player, "#ff6b6b");
+  } catch (error) {
+    player.destroy();
+    throw error;
+  }
+  heatmapPlayer = player;
+  allPlayers.push(heatmapPlayer);
+  viewManager.addSideTarget(heatmapPlayer, "Buy");
 }
 
 function addLegendItem(username, color) {
@@ -607,7 +800,7 @@ function stat(label, value, suffix = "") {
   return item;
 }
 
-function buildPlayerCard(data, username, color) {
+function buildPlayerCard(data, username, color, rtype = "Buy") {
   const card = document.createElement("article");
   card.className = "card player-card";
   card.style.borderLeftColor = color;
@@ -626,15 +819,15 @@ function buildPlayerCard(data, username, color) {
     stat("AWP 持有率", combat.awp_rate, "%"),
     stat("有效回合", data.round_count ?? (Array.isArray(data.rounds) ? data.rounds.length : 0))
   );
-  const buyLabel = document.createElement("span");
-  buyLabel.className = "buy-label";
-  buyLabel.textContent = "Buy";
-  heading.append(title, stats, buyLabel);
+  const rtypeLabel = document.createElement("span");
+  rtypeLabel.className = "buy-label";
+  rtypeLabel.textContent = rtype === "Pistol" ? "Pistol" : "Buy";
+  heading.append(title, stats, rtypeLabel);
 
   const canvas = document.createElement("canvas");
   canvas.className = "replay-canvas";
-  canvas.dataset.rtype = "Buy";
-  canvas.setAttribute("aria-label", `${username} Buy 回放`);
+  canvas.dataset.rtype = rtype;
+  canvas.setAttribute("aria-label", `${username} ${rtype} 回放`);
   card.append(heading, canvas);
   return { card, canvas };
 }
@@ -667,9 +860,9 @@ async function addPlayer(result, epoch = pollEpoch) {
     const color = PLAYER_COLORS[nextColor % PLAYER_COLORS.length];
     nextColor += 1;
 
-    const { card, canvas } = buildPlayerCard(data, username, color);
-    card.id = `buy-${domain}`;
-    const buyPlayer = new ReplayPlayer(canvas, {
+    const { card: buyCard, canvas: buyCanvas } = buildPlayerCard(data, username, color, "Buy");
+    buyCard.id = `buy-${domain}`;
+    const buyPlayer = createReplay(buyCanvas, {
       radar: data.radar,
       transform: data.transform,
       rounds: data.rounds,
@@ -678,17 +871,53 @@ async function addPlayer(result, epoch = pollEpoch) {
     });
     try {
       ensurePistolPlayer(data);
+      ensureHeatmapPlayer(data);
       const cards = $("#cards");
       if (!cards) throw new Error("页面缺少玩家卡片容器");
-      cards.appendChild(card);
+      cards.appendChild(buyCard);
       allPlayers.push(buyPlayer);
-      sideTargets.push({ player: buyPlayer, rtype: "Buy" });
-      registerReplayView(`buy:${domain}`, username, card, buyPlayer, color, `${username} 购买局`);
+      viewManager.addSideTarget(buyPlayer, "Buy");
+      registerReplayView(`buy:${domain}`, username, buyCard, buyPlayer, color, `${username} 购买局`);
+
+      const pistolRoundsForPlayer = data.rounds.filter(r => r && r.rtype === "Pistol");
+      if (pistolRoundsForPlayer.length > 0) {
+        const { card: pistolCard, canvas: pistolCanvas } = buildPlayerCard(data, username, color, "Pistol");
+        pistolCard.id = `pistol-${domain}`;
+        const perPlayerPistol = createReplay(pistolCanvas, {
+          radar: data.radar,
+          transform: data.transform,
+          rounds: data.rounds,
+          side: currentSide,
+          rtype: "Pistol"
+        });
+        cards.appendChild(pistolCard);
+        allPlayers.push(perPlayerPistol);
+        viewManager.addSideTarget(perPlayerPistol, "Pistol");
+        registerReplayView(`pistol:${domain}`, `${username} 手枪局`, pistolCard, perPlayerPistol, color, `${username} 手枪局`);
+      }
+
+      // Per-player density heatmap
+      const { card: heatCard, canvas: heatCanvas } = buildPlayerCard(data, username, color, "热力图");
+      heatCard.id = `heat-${domain}`;
+      const heatPlayer = createHeatmap(heatCanvas, {
+        radar: data.radar,
+        transform: data.transform,
+        rounds: data.rounds,
+        side: currentSide,
+        rtype: "Buy"
+      });
+      cards.appendChild(heatCard);
+      allPlayers.push(heatPlayer);
+      viewManager.addSideTarget(heatPlayer, "Buy");
+      registerReplayView(`heat:${domain}`, `${username} 热力图`, heatCard, heatPlayer, color, `${username} 热力图`);
+
       players.set(domain, { data, buyPlayer, color });
 
       for (const round of data.rounds) {
         if (round && round.rtype === "Pistol") pistolRounds.push({ ...round, color });
+        if (round && round.rtype === "Buy") heatmapRounds.push({ ...round });
       }
+      if (heatmapPlayer) heatmapPlayer.markDirty();
       addLegendItem(username, color);
       uiFailures.delete(username);
       drawAll();
@@ -795,7 +1024,7 @@ function boot() {
   publicMonitoringEnabled = true;
   void poll(pollEpoch);
   updateClockControls();
-  if (typeof requestAnimationFrame === "function") clock.raf = requestAnimationFrame(tick);
+  replayClock.start();
 }
 
 if (typeof document !== "undefined") {
@@ -809,5 +1038,7 @@ if (typeof module !== "undefined") {
     wireControls, setAnalysisMode, setAnalysisBusy, runAnalysis,
     connectWithEnteredKey, setPlatform, updatePlatformControls,
     showPerfectWorldTargets, runPerfectWorldAnalysis,
+    inspectLocalDemos, runLocalDemoAnalysis,
   };
 }
+})();

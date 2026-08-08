@@ -9,6 +9,9 @@ import pytest
 NODE = shutil.which("node")
 REPLAY_JS = os.path.join(os.path.dirname(__file__), "..", "static", "replay.js")
 APP_JS = os.path.join(os.path.dirname(__file__), "..", "static", "app.js")
+ENGINE_JS = os.path.join(os.path.dirname(__file__), "..", "static", "replay-engine", "engine.js")
+CLOCK_JS = os.path.join(os.path.dirname(__file__), "..", "static", "replay-engine", "clock.js")
+HEATMAP_JS = os.path.join(os.path.dirname(__file__), "..", "static", "replay-engine", "heatmap.js")
 pytestmark = pytest.mark.skipif(NODE is None, reason="Node.js is not installed")
 
 
@@ -562,5 +565,394 @@ if (!empty.hidden || switcher.hidden || toolbar.hidden) throw new Error("result 
         text=True,
         timeout=15,
         check=False,
+    )
+
+
+def test_local_demo_upload_inspect_and_analyze_flow():
+    script = """
+const { setPlatform, inspectLocalDemos, runLocalDemoAnalysis } = require(%s);
+
+function element(overrides = {}) {
+  return Object.assign({
+    value: "", disabled: false, hidden: false, files: [], children: [],
+    dataset: {}, attributes: {}, listeners: {},
+    classList: {
+      toggle() {},
+    },
+    setAttribute(name, value) { this.attributes[name] = String(value); },
+    addEventListener(name, handler) { this.listeners[name] = handler; },
+    appendChild(child) { this.children.push(child); },
+    append(...children) { this.children.push(...children); },
+    replaceChildren(...children) { this.children = children; },
+  }, overrides);
+}
+
+const elements = {
+  "#local-demo-files": element({ files: [{ name: "one.dem", size: 10 }, { name: "two.dem", size: 20 }] }),
+  "#local-demo-file-list": element(),
+  "#local-demo-inspect": element(),
+  "#local-demo-info": element(),
+  "#local-demo-map": element(),
+  "#local-demo-players": element(),
+  "#run": element(),
+  "#status": element(),
+  "#failed": element(),
+};
+const mockCheckboxes = [
+  element({ value: "76561198146001127", checked: true }),
+  element({ value: "76561198000000001", checked: true }),
+];
+global.document = {
+  querySelector(selector) { return elements[selector] || null; },
+  querySelectorAll(selector) {
+    if (selector === "#local-demo-players input:checked") return mockCheckboxes;
+    return [];
+  },
+  createElement() { return element(); },
+  createTextNode(text) { return { textContent: String(text) }; },
+  addEventListener() {},
+};
+
+global.FormData = class {
+  constructor() { this.parts = []; }
+  append(name, file, filename) { this.parts.push({ name, file, filename }); }
+};
+const requests = [];
+global.fetch = async (url, options = {}) => {
+  requests.push({ url, options });
+  if (url === "/api/status") return { ok: true, status: 200, async json() { return { status: "idle", message: "", results: [], failed: [] }; } };
+  if (url === "/api/local-demos/inspect") return { ok: true, status: 200, async json() { return { session_id: "a".repeat(32), map: "de_nuke", files: [{ name: "one.dem", size: 10 }, { name: "two.dem", size: 20 }], players: [{ steamid: "76561198146001127", username: "L4n", appearances: 2 }, { steamid: "76561198000000001", username: "Other", appearances: 2 }] }; } };
+  if (url === "/api/local-demos/analyze") return { ok: true, status: 200, async json() { return { status: "started", source: "local_demos" }; } };
+  throw new Error("unexpected request " + url);
+};
+
+(async () => {
+  await setPlatform("localdemos");
+  await inspectLocalDemos();
+  if (requests[1].options.body.parts.length !== 2) throw new Error("two files were not appended to FormData");
+  if (requests[1].options.headers) throw new Error("multipart request manually set Content-Type");
+  await runLocalDemoAnalysis();
+  const analyzeRequest = requests.find(item => item.url === "/api/local-demos/analyze");
+  const body = JSON.parse(analyzeRequest.options.body);
+  if (body.session_id !== "a".repeat(32)) throw new Error("analyze payload missing session_id");
+  if (!Array.isArray(body.steamids) || body.steamids.length === 0) throw new Error("analyze payload must include steamids array");
+})().catch(error => { console.error(error); process.exitCode = 1; });
+""" % json.dumps(os.path.abspath(APP_JS))
+    result = subprocess.run(
+        [NODE, "-e", script],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_engine_create_replay_factory_matches_class_api():
+    script = f"""
+global.Image = class FakeImage {{
+  constructor() {{
+    this.complete = false;
+    this.naturalWidth = 0;
+    this.naturalHeight = 0;
+  }}
+  set src(value) {{ this._src = value; }}
+}};
+
+const {{ createReplay, NADE_ICON_SRC, NADE_EFFECT_SRC }} = require({json.dumps(os.path.abspath(ENGINE_JS))});
+const calls = {{ lineTo: [], fillText: [] }};
+const ctx = {{
+  clearRect() {{}}, fillRect() {{}}, drawImage() {{}}, save() {{}}, restore() {{}},
+  beginPath() {{}}, moveTo() {{}}, stroke() {{}}, arc() {{}}, fill() {{}},
+  translate() {{}}, rotate() {{}}, closePath() {{}},
+  lineTo(x, y) {{ calls.lineTo.push([x, y]); }},
+  fillText(text, x, y) {{ calls.fillText.push([text, x, y]); }}
+}};
+const canvas = {{ width: 300, height: 150, getContext() {{ return ctx; }} }};
+const rounds = [];
+const player = createReplay(canvas, {{
+  radar: "/maps/de_test/radar.png",
+  transform: {{ pos_x: 0, pos_y: 0, scale: 1 }},
+  rounds,
+  side: "CT",
+  rtype: "Pistol"
+}});
+
+if (NADE_ICON_SRC.smoke !== "smokegrenade.svg" ||
+    NADE_ICON_SRC.flash !== "flashbang.svg" ||
+    NADE_ICON_SRC.he !== "hegrenade.svg") throw new Error("new flying icons are not mapped");
+if (NADE_EFFECT_SRC.smoke !== "map_smoke.svg" ||
+    NADE_EFFECT_SRC.molotov !== "inferno.svg") throw new Error("landing effects are not mapped");
+if (player._nadeIconSource("molotov") !== "incgrenade.svg") throw new Error("CT incendiary icon missing");
+player.setFilter("T", "Pistol");
+if (player._nadeIconSource("molotov") !== "molotov_bottle.svg") throw new Error("T molotov icon missing");
+player.setFilter("CT", "Pistol");
+
+if (player._interp([[5, 10, 20]], 4) !== null) throw new Error("path appeared before first sample");
+if (JSON.stringify(player._interp([[5, 10, 20]], 5)) !== "[10,20]") throw new Error("exact sample missing");
+if (player._interp([[5, 10, 20]], 6) !== null) throw new Error("live path persisted after last sample");
+if (JSON.stringify(player._interp([[5, 10, 20]], 6, true)) !== "[10,20]") throw new Error("held marker missing");
+
+rounds.push({{ side: "CT", rtype: "Pistol", round_id: 1, path: [], grenades: [] }});
+if (player._rounds().length !== 1) throw new Error("mutable merged-round reference was lost");
+player.setFilter("T", "Pistol");
+if (player._rounds().length !== 0) throw new Error("side filter did not update");
+
+player._drawGrenade({{
+  type: "smoke", throw_t: 1, land_t: 3, expire_t: 20,
+  arc: [[1, 0, 0], [3, 10, 0]], land: [10, 0]
+}}, 2);
+const lastLine = calls.lineTo[calls.lineTo.length - 1];
+if (JSON.stringify(lastLine) !== "[5,0]") throw new Error("airborne arc did not reach interpolated icon head");
+
+player.imgFailed = true;
+player.drawAt(0);
+if (!calls.fillText.some(call => call[0] === "雷达图加载失败")) throw new Error("radar failure was not visible");
+
+player.destroy();
+"""
+    result = subprocess.run(
+        [NODE, "-e", script],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_clock_and_view_manager_factories():
+    script = f"""
+const {{ createClock, createViewManager, PLAYBACK_SPEEDS }} = require({json.dumps(os.path.abspath(CLOCK_JS))});
+
+// --- Clock ---
+let tickCount = 0;
+let controlsCount = 0;
+const clock = createClock({{
+  onTick: () => {{ tickCount += 1; }},
+  onControlsUpdate: () => {{ controlsCount += 1; }}
+}});
+
+if (clock.isPlaying() !== true) throw new Error("clock should start playing");
+if (clock.getSpeed() !== 2) throw new Error("default speed should be 2x");
+if (clock.playbackSeconds() !== 10) throw new Error("default playback seconds should be 10");
+if (clock.windowSeconds() !== 20) throw new Error("default window seconds should be 20");
+
+const deltas = [1, 2, 4].map(speed => clock.playbackElapsedDelta(1, speed));
+if (JSON.stringify(deltas) !== "[0.5,1,2]") {{
+  throw new Error("unexpected elapsed deltas: " + JSON.stringify(deltas));
+}}
+if (clock.playbackElapsedDelta(1, 3) !== 0 || clock.playbackElapsedDelta(-1, 2) !== 0) {{
+  throw new Error("invalid playback speed input was accepted");
+}}
+
+clock.setSpeed(1);
+if (clock.getSpeed() !== 1) throw new Error("speed not updated to 1x");
+clock.setSpeed(2); // restore
+
+clock.setElapsed(5);
+if (clock.getElapsed() !== 5) throw new Error("elapsed not set");
+if (clock.getGameTime() !== 10) throw new Error("game time should be 10 for elapsed=5 at 2x");
+
+clock.setPlaying(false);
+if (clock.isPlaying()) throw new Error("clock should be paused");
+
+clock.seek(500); // 50% of 1000
+if (clock.isPlaying()) throw new Error("seek should pause");
+if (clock.getElapsed() !== 5) throw new Error("seek to 500 should set elapsed to 5");
+
+// --- View Manager ---
+function element(id) {{
+  const classes = new Set();
+  return {{
+    id, hidden: false, children: [], dataset: {{}}, attributes: {{}}, listeners: {{}},
+    classList: {{
+      toggle(name, enabled) {{ if (enabled) classes.add(name); else classes.delete(name); }},
+      contains(name) {{ return classes.has(name); }}
+    }},
+    style: {{ setProperty() {{}} }},
+    appendChild(child) {{ this.children.push(child); }},
+    setAttribute(name, value) {{ this.attributes[name] = String(value); }},
+    addEventListener(name, handler) {{ this.listeners[name] = handler; }}
+  }};
+}}
+
+global.document = {{ createElement: () => element() }};
+
+const switcher = element("view-switcher");
+const toolbar = element("view-toolbar");
+toolbar.hidden = true;
+const emptyState = element("empty-state");
+const vm = createViewManager(() => ({{ switcher, toolbar, emptyState }}));
+
+const panel1 = element("p1");
+const player1 = {{ drawAt() {{}}, setFilter() {{}}, destroy() {{}} }};
+const panel2 = element("p2");
+const player2 = {{ drawAt() {{}}, setFilter() {{}}, destroy() {{}} }};
+
+vm.register("v1", "View 1", panel1, player1, "#ff0000");
+if (panel1.hidden) throw new Error("first view should be active");
+if (switcher.children.length !== 1) throw new Error("button not appended");
+
+vm.register("v2", "View 2", panel2, player2, "#00ff00", "View 2 accessible");
+if (panel1.hidden || !panel2.hidden) throw new Error("second view should not steal active");
+if (switcher.children.length !== 2) throw new Error("second button not appended");
+if (switcher.children[1].attributes["aria-label"] !== "View 2 accessible") {{
+  throw new Error("accessible label not set");
+}}
+
+vm.activate("v2");
+if (!panel1.hidden || panel2.hidden) throw new Error("activate did not switch panels");
+if (switcher.children[0].attributes["aria-pressed"] !== "false" ||
+    switcher.children[1].attributes["aria-pressed"] !== "true") {{
+  throw new Error("aria-pressed not updated");
+}}
+
+// Duplicate registration should be ignored
+vm.register("v2", "Duplicate", panel2, player2);
+if (switcher.children.length !== 2) throw new Error("duplicate registration created extra button");
+
+vm.addSideTarget(player1, "Buy");
+vm.addSideTarget(player2, "Pistol");
+let filterCalls = [];
+player1.setFilter = (side, rtype) => {{ filterCalls.push(["p1", side, rtype]); }};
+player2.setFilter = (side, rtype) => {{ filterCalls.push(["p2", side, rtype]); }};
+vm.setSide("T");
+if (filterCalls.length !== 2 || filterCalls[0][1] !== "T" || filterCalls[1][1] !== "T") {{
+  throw new Error("setSide did not propagate to all targets");
+}}
+
+vm.reset();
+if (vm.getActive() !== null) throw new Error("reset did not clear active view");
+if (vm.has("v1")) throw new Error("reset did not clear views");
+"""
+    result = subprocess.run(
+        [NODE, "-e", script],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_heatmap_color_gradient_mapping():
+    script = f"""
+const {{ heatColor, HEATMAP_GRADIENT }} = require({json.dumps(os.path.abspath(HEATMAP_JS))});
+
+// At 0 the colour should be fully transparent.
+const c0 = heatColor(0);
+if (c0[3] !== 0) throw new Error("heatColor(0) should have alpha 0, got " + c0[3]);
+
+// At 1 it should be red-ish with high alpha.
+const c1 = heatColor(1);
+if (c1[0] < 200 || c1[3] < 200) throw new Error("heatColor(1) should be bright red with high alpha, got " + JSON.stringify(c1));
+
+// Clamping works.
+const cNeg = heatColor(-0.5);
+if (JSON.stringify(cNeg) !== JSON.stringify(c0)) throw new Error("negative t not clamped to 0");
+const cOver = heatColor(1.5);
+if (JSON.stringify(cOver) !== JSON.stringify(c1)) throw new Error("t > 1 not clamped to 1");
+
+// Midpoint should be in the green-blue range (high g, some b).
+const cMid = heatColor(0.6);
+if (cMid[1] < 100) throw new Error("midpoint colour unexpectedly dark: " + JSON.stringify(cMid));
+
+// Monotonic alpha increase (not strictly, but general upward trend).
+const alphaAt = t => heatColor(t)[3];
+const samples = [0, 0.1, 0.25, 0.5, 0.75, 1.0].map(alphaAt);
+let nonDecreasing = true;
+for (let i = 1; i < samples.length; i++) {{
+  if (samples[i] < samples[i - 1] - 5) {{ nonDecreasing = false; break; }}
+}}
+if (!nonDecreasing) throw new Error("alpha should generally increase: " + JSON.stringify(samples));
+
+// Gradient has at least 4 stops.
+if (HEATMAP_GRADIENT.length < 4) throw new Error("gradient too short");
+"""
+    result = subprocess.run(
+        [NODE, "-e", script],
+        capture_output=True, text=True, timeout=15, check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_heatmap_factory_collects_and_filters_points():
+    script = f"""
+global.Image = class FakeImage {{
+  constructor() {{ this.complete = false; this.naturalWidth = 0; this.naturalHeight = 0; }}
+  set src(value) {{ this._src = value; }}
+}};
+
+const {{ createHeatmap }} = require({json.dumps(os.path.abspath(HEATMAP_JS))});
+
+const calls = {{ fillRect: 0, drawImage: 0 }};
+const ctx = {{
+  clearRect() {{}}, fillRect() {{ calls.fillRect += 1; }}, drawImage() {{ calls.drawImage += 1; }},
+  save() {{}}, restore() {{}}, beginPath() {{}}, arc() {{}}, fill() {{}},
+  fillText() {{}}, textAlign: "", textBaseline: "", font: "",
+  createRadialGradient() {{ return {{ addColorStop() {{}} }}; }},
+  getImageData() {{ return {{ data: new Uint8ClampedArray(4) }}; }},
+  putImageData() {{}}
+}};
+const canvas = {{ width: 300, height: 200, getContext() {{ return ctx; }} }};
+
+const rounds = [
+  {{ side: "CT", rtype: "Buy", round_id: 1,
+     path: [[0, 100, 200], [1, 110, 210], [2, 120, 220], [3, 130, 230]] }},
+  {{ side: "T", rtype: "Buy", round_id: 2,
+     path: [[0, 500, 600], [1, 510, 610]] }},
+  {{ side: "CT", rtype: "Pistol", round_id: 3,
+     path: [[0, 300, 400]] }},
+];
+
+const hm = createHeatmap(canvas, {{
+  radar: "/maps/de_test/radar.png",
+  transform: {{ pos_x: 0, pos_y: 0, scale: 1 }},
+  rounds,
+  side: "CT",
+  rtype: "Buy"
+}});
+
+// Only round 1 matches CT + Buy.
+const points = hm._collectPoints();
+if (points.length < 2 || points.length > 4) {{
+  throw new Error("expected 2-4 CT Buy points (after min-distance filter), got " + points.length);
+}}
+// All points should come from round 1 (x in 100-130 range).
+for (const [x, y] of points) {{
+  if (x < 100 || x > 130) throw new Error("non-CT-Buy point leaked: " + JSON.stringify([x, y]));
+}}
+
+// Switching to T side should collect round 2 points.
+hm.setFilter("T", "Buy");
+const tPoints = hm._collectPoints();
+if (tPoints.length === 0) throw new Error("T Buy points missing");
+for (const [x, y] of tPoints) {{
+  if (x < 500) throw new Error("non-T-Buy point leaked: " + JSON.stringify([x, y]));
+}}
+
+// Switching to Pistol should collect round 3.
+hm.setFilter("CT", "Pistol");
+const pistolPoints = hm._collectPoints();
+if (pistolPoints.length !== 1) throw new Error("expected 1 CT Pistol point, got " + pistolPoints.length);
+
+// drawAt should draw background and density (or fallback).
+hm.imgFailed = true;
+hm.drawAt(0);
+if (calls.fillRect === 0) throw new Error("drawAt did not draw background");
+
+// toggleRound should exclude a round.
+hm.setFilter("CT", "Buy");
+hm.toggleRound(1, false);
+if (hm._filteredRounds().length !== 0) throw new Error("disabled round was not excluded");
+
+hm.destroy();
+if (!hm.destroyed) throw new Error("destroy did not set destroyed flag");
+"""
+    result = subprocess.run(
+        [NODE, "-e", script],
+        capture_output=True, text=True, timeout=15, check=False,
     )
     assert result.returncode == 0, result.stderr or result.stdout

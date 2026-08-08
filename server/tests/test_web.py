@@ -272,6 +272,8 @@ def test_index_contains_unified_replay_layout():
     assert 'role="group" aria-label="回放视图选择"' in html
     assert 'id="pistol"' in html
     assert 'id="pistol-canvas"' in html
+    assert 'id="heatmap"' in html
+    assert 'id="heatmap-canvas"' in html
     assert 'class="replay-canvas"' in html
     assert 'id="cards"' in html
     assert 'id="mode-normal"' in html
@@ -396,10 +398,13 @@ def test_frontend_registers_button_switched_replay_views():
     assert response.status_code == 200
     source = response.get_data(as_text=True)
     assert 'registerReplayView("pistol", "手枪局（全员）"' in source
-    assert 'registerReplayView(`buy:${domain}`, username, card, buyPlayer, color, `${username} 购买局`)' in source
-    assert 'button.setAttribute("aria-pressed", String(active))' in source
-    assert 'const activeView = replayViews.get(activeViewKey)' in source
-    assert 'clock = { elapsed: 0, playing: true, speed: 2' in source
+    assert 'registerReplayView(`buy:${domain}`, username, buyCard, buyPlayer, color, `${username} 购买局`)' in source
+    assert 'registerReplayView("heatmap", "热力图（全员）"' in source
+    assert 'registerReplayView(`heat:${domain}`, `${username} 热力图`' in source
+    assert 'viewManager.drawActive' in source
+    assert 'replayClock.start()' in source
+    assert 'createReplay(buyCanvas' in source
+    assert 'createHeatmap(heatCanvas' in source
     assert 'requestProtectedJSON("/api/analyze"' in source
     assert 'requestJSON("/api/status")' in source
     assert 'requestJSON(`/api/player/${encodeURIComponent(domain)}`' in source
