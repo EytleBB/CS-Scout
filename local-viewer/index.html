@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CS Demo Viewer - 本地回放</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #1a1d28; color: #e0e0e8;
+      font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      display: flex; flex-direction: column; min-height: 100vh;
+    }
+    header {
+      background: #232838; padding: 10px 20px;
+      border-bottom: 1px solid #333a4d;
+      display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    }
+    header h1 { font-size: 18px; font-weight: 600; white-space: nowrap; }
+    header .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .btn {
+      background: #3a4256; color: #e0e0e8; border: 1px solid #4a5570;
+      padding: 6px 14px; border-radius: 4px; cursor: pointer; font-size: 13px;
+    }
+    .btn:hover { background: #4a5570; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn.active { background: #55b8ff; color: #11141e; border-color: #55b8ff; }
+    .speed-btns { display: flex; gap: 4px; }
+    #play-pause { min-width: 70px; }
+    #scrubber {
+      flex: 1; min-width: 120px; accent-color: #55b8ff;
+    }
+    #time-label { font-size: 12px; color: #888aa0; min-width: 60px; text-align: right; }
+    main {
+      flex: 1; display: flex; gap: 1px;
+      overflow: hidden;
+    }
+    #sidebar {
+      width: 320px; min-width: 280px; background: #232838;
+      padding: 16px; overflow-y: auto;
+      border-right: 1px solid #333a4d;
+      display: flex; flex-direction: column; gap: 16px;
+    }
+    .panel { background: #1e2230; border-radius: 6px; padding: 12px; }
+    .panel h3 { font-size: 13px; margin-bottom: 8px; color: #888aa0; text-transform: uppercase; letter-spacing: 0.5px; }
+    #drop-zone {
+      border: 2px dashed #4a5570; border-radius: 8px;
+      padding: 24px 16px; text-align: center; cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    #drop-zone:hover, #drop-zone.dragover {
+      border-color: #55b8ff; background: rgba(85, 184, 255, 0.08);
+    }
+    #drop-zone p { color: #888aa0; font-size: 13px; }
+    #file-list { margin-top: 8px; font-size: 12px; }
+    #file-list .file-item { padding: 4px 0; color: #c0c0d0; }
+    #player-select {
+      width: 100%; background: #2a3040; color: #e0e0e8;
+      border: 1px solid #4a5570; border-radius: 4px; padding: 6px 8px; font-size: 13px;
+    }
+    #parse-btn { width: 100%; margin-top: 8px; }
+    #status-msg { font-size: 12px; color: #888aa0; min-height: 20px; }
+    #status-msg.error { color: #ff6b6b; }
+    #status-msg.success { color: #6bff9e; }
+    #view-toolbar {
+      display: flex; gap: 4px; padding: 8px 16px;
+      background: #232838; border-bottom: 1px solid #333a4d;
+      overflow-x: auto;
+    }
+    .view-btn {
+      background: #2a3040; color: #c0c0d0; border: 1px solid #3a4256;
+      padding: 6px 14px; border-radius: 4px; cursor: pointer; font-size: 13px; white-space: nowrap;
+    }
+    .view-btn:hover { background: #3a4256; }
+    .view-btn.active { background: #55b8ff; color: #11141e; border-color: #55b8ff; }
+    #side-toggle { display: flex; gap: 4px; margin-left: auto; }
+    .stat-badge {
+      display: inline-block; background: #2a3040; padding: 2px 8px;
+      border-radius: 3px; font-size: 12px; color: #888aa0; margin-left: 6px;
+    }
+    #workspace {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; padding: 16px;
+      overflow: hidden;
+    }
+    .replay-panel { display: none; flex-direction: column; align-items: center; gap: 8px; }
+    .replay-panel.active { display: flex; }
+    .replay-panel .info { font-size: 13px; color: #888aa0; }
+    canvas.replay-canvas {
+      max-width: 760px; width: 100%;
+      max-height: 72vh;
+      border-radius: 8px;
+      border: 1px solid #333a4d;
+    }
+    #empty-state {
+      color: #4a5570; font-size: 16px; text-align: center; padding: 40px;
+    }
+    .hidden { display: none !important; }
+    #legend { display: flex; gap: 12px; font-size: 12px; flex-wrap: wrap; }
+    .legend-item { display: flex; align-items: center; gap: 4px; }
+    .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>CS Demo Viewer</h1>
+    <div class="controls">
+      <button class="btn" id="play-pause">⏸ 暂停</button>
+      <div class="speed-btns">
+        <button class="btn speed-btn" data-speed="1">1x</button>
+        <button class="btn speed-btn active" data-speed="2">2x</button>
+        <button class="btn speed-btn" data-speed="4">4x</button>
+      </div>
+      <input type="range" id="scrubber" min="0" max="1000" value="0">
+      <span id="time-label">0.0s</span>
+    </div>
+  </header>
+
+  <main>
+    <aside id="sidebar">
+      <div class="panel">
+        <h3>Demo 文件</h3>
+        <div id="drop-zone">
+          <p>拖放 .dem 文件到这里<br>或点击选择</p>
+          <input type="file" id="file-input" accept=".dem" multiple class="hidden">
+        </div>
+        <div id="file-list"></div>
+      </div>
+
+      <div class="panel" id="player-panel" style="display:none;">
+        <h3>玩家选择</h3>
+        <select id="player-select"></select>
+        <button class="btn" id="parse-btn" disabled>解析回放</button>
+      </div>
+
+      <div class="panel">
+        <h3>状态</h3>
+        <div id="status-msg">等待上传 Demo...</div>
+      </div>
+    </aside>
+
+    <div id="workspace">
+      <div id="view-toolbar" class="hidden">
+        <div id="side-toggle">
+          <button class="btn side-btn active" data-side="CT">CT</button>
+          <button class="btn side-btn" data-side="T">T</button>
+        </div>
+      </div>
+      <div id="empty-state">
+        上传 .dem 文件并选择玩家以查看回放
+      </div>
+    </div>
+  </main>
+
+  <!-- Scripts: engine modules loaded in order -->
+  <script src="/static/replay-engine/engine.js"></script>
+  <script src="/static/replay-engine/clock.js"></script>
+  <script src="/static/replay-engine/heatmap.js"></script>
+  <script src="/static/app-viewer.js"></script>
+</body>
+</html>
