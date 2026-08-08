@@ -108,8 +108,10 @@ def classify_rounds(parser, rounds, target_sids):
 
 
 def parse_positions(parser, classified, target_steamid):
-    """Sample target's X/Y every SAMPLE_EVERY ticks across [fe, fe+WINDOW_S]
-    for each kept classified round. Returns per-round path lists."""
+    """Sample target's X/Y/yaw every SAMPLE_EVERY ticks across [fe, fe+WINDOW_S]
+    for each kept classified round. Returns per-round path lists.
+    Each path sample is [t, x, y, yaw] where yaw is the player's horizontal
+    view angle in degrees (0=north/+Y, 90=east/+X, clockwise)."""
     sid = str(target_steamid)
     active = [r for r in classified if r.get("side") and r.get("rtype")]
     if not active:
@@ -121,7 +123,7 @@ def parse_positions(parser, classified, target_steamid):
             sample_ticks.append(t); tick_round[t] = r["official_num"]
     if not sample_ticks:
         return []
-    df = parser.parse_ticks(["X", "Y", "steamid"], ticks=sample_ticks)
+    df = parser.parse_ticks(["X", "Y", "yaw", "steamid"], ticks=sample_ticks)
     if not isinstance(df, pd.DataFrame):
         df = pd.DataFrame(df)
     required = {"tick", "steamid", "X", "Y"}
@@ -134,6 +136,12 @@ def parse_positions(parser, classified, target_steamid):
     df = df[np.isfinite(df["X"]) & np.isfinite(df["Y"])].copy()
     if df.empty:
         return []
+    # yaw may be missing or NaN for some ticks; keep it as-is so the renderer
+    # can fall back to velocity-based direction when yaw is unavailable.
+    if "yaw" not in df.columns:
+        df["yaw"] = float("nan")
+    else:
+        df["yaw"] = pd.to_numeric(df["yaw"], errors="coerce")
     df["official_num"] = df["tick"].map(tick_round)
     fe_by_num = {r["official_num"]: r["fe_tick"] for r in active}
     meta_by_num = {r["official_num"]: r for r in active}
@@ -141,8 +149,12 @@ def parse_positions(parser, classified, target_steamid):
     for num, grp in df.groupby("official_num"):
         grp = grp.sort_values("tick")
         fe = fe_by_num[num]
-        path = [[round((int(t) - fe) / config.TICK_RATE, 3), float(x), float(y)]
-                for t, x, y in zip(grp["tick"], grp["X"], grp["Y"])]
+        path = []
+        for t, x, y, yaw in zip(grp["tick"], grp["X"], grp["Y"], grp["yaw"]):
+            entry = [round((int(t) - fe) / config.TICK_RATE, 3), float(x), float(y)]
+            if pd.notna(yaw):
+                entry.append(float(yaw))
+            path.append(entry)
         m = meta_by_num[num]
         out.append({"official_num": int(num), "side": m["side"],
                     "rtype": m["rtype"], "path": path})
