@@ -16,6 +16,7 @@ import logging
 import os
 from pathlib import Path
 import re
+import socket
 import subprocess
 import sys
 import threading
@@ -33,11 +34,13 @@ log = logging.getLogger("fivee-monitor")
 
 DEFAULT_CDP_PORT = 9222
 CDP_RETRY_SECONDS = 2.0
+CLIENT_LAUNCH_TIMEOUT = 30.0
 MATCH_RESOLVE_ATTEMPTS = 8
 MAX_FRAME_TEXT = 2 * 1024 * 1024
 MAX_ENCODED_FRAME = (MAX_FRAME_TEXT * 4 // 3) + 32
 MAX_SEEN_MATCHES = 100
 MATCH_CANDIDATE_TTL = 10 * 60
+FIVEE_CONFIG_FILENAME = "fivee-install.json"
 PLATFORM_USER_INFO_URL = "https://platform-api.5eplay.com/api/user/info"
 
 _UUID_RE = re.compile(
@@ -674,33 +677,212 @@ def active_steam_id() -> str:
     return ""
 
 
-def find_5e_executable() -> str:
-    """Return a validated local 5E executable path, if installed."""
-    candidates: list[Path] = []
+def _fivee_config_path() -> Path:
+    explicit = os.getenv("CS_SCOUT_5E_CONFIG", "").strip()
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    local_app_data = os.getenv("LOCALAPPDATA", "").strip()
+    if local_app_data:
+        return Path(local_app_data) / "CS-Scout" / FIVEE_CONFIG_FILENAME
+    return Path.home() / "AppData" / "Local" / "CS-Scout" / FIVEE_CONFIG_FILENAME
+
+
+def _load_saved_5e_executable() -> Path | None:
+    try:
+        payload = json.loads(_fivee_config_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    value = payload.get("executable") if isinstance(payload, dict) else None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return Path(value).expanduser().resolve()
+    except OSError:
+        return None
+
+
+def _save_5e_executable(path: Path) -> None:
+    config_path = _fivee_config_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = config_path.with_name(
+        f".{config_path.name}-{os.getpid()}-{threading.get_ident()}.tmp"
+    )
+    try:
+        temporary.write_text(
+            json.dumps({"executable": str(path)}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        os.replace(temporary, config_path)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _running_5e_executable_paths() -> list[Path]:
+    """Read accessible executable paths for an already running 5E client."""
+    if sys.platform != "win32":
+        return []
+    script = (
+        "$ErrorActionPreference='SilentlyContinue';"
+        "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);"
+        "$v=@(Get-Process -Name 5EClient|ForEach-Object{$_.Path}|Where-Object{$_});"
+        "ConvertTo-Json -Compress -InputObject $v"
+    )
+    try:
+        completed = subprocess.run(
+            [
+                "powershell.exe", "-NoProfile", "-NonInteractive",
+                "-ExecutionPolicy", "Bypass", "-Command", script,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=8,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        values = json.loads(completed.stdout.strip() or "[]")
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return []
+    if isinstance(values, str):
+        values = [values]
+    return [Path(value) for value in values if isinstance(value, str) and value.strip()]
+
+
+def _display_icon_path(value: object) -> Path | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.startswith('"') and '"' in text[1:]:
+        text = text[1:text.find('"', 1)]
+    else:
+        text = text.rsplit(",", 1)[0].strip()
+    return Path(os.path.expandvars(text)) if text.casefold().endswith(".exe") else None
+
+
+def _registry_5e_executable_paths() -> list[Path]:
+    """Read App Paths and uninstall records without scanning whole drives."""
+    if sys.platform != "win32":
+        return []
+    try:
+        import winreg
+    except ImportError:
+        return []
+
+    result: list[Path] = []
+    views = [0]
+    for name in ("KEY_WOW64_64KEY", "KEY_WOW64_32KEY"):
+        value = int(getattr(winreg, name, 0))
+        if value and value not in views:
+            views.append(value)
+    roots = [winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE]
+
+    for root in roots:
+        for view in views:
+            try:
+                with winreg.OpenKey(
+                    root,
+                    r"Software\Microsoft\Windows\CurrentVersion\App Paths\5EClient.exe",
+                    0,
+                    winreg.KEY_READ | view,
+                ) as key:
+                    result.append(Path(str(winreg.QueryValueEx(key, None)[0])))
+            except OSError:
+                pass
+
+            uninstall = r"Software\Microsoft\Windows\CurrentVersion\Uninstall"
+            try:
+                parent = winreg.OpenKey(root, uninstall, 0, winreg.KEY_READ | view)
+            except OSError:
+                continue
+            with parent:
+                index = 0
+                while index < 2048:
+                    try:
+                        child_name = winreg.EnumKey(parent, index)
+                    except OSError:
+                        break
+                    index += 1
+                    try:
+                        with winreg.OpenKey(parent, child_name) as child:
+                            display_name = str(winreg.QueryValueEx(child, "DisplayName")[0])
+                            if "5e" not in display_name.casefold():
+                                continue
+                            try:
+                                location = str(winreg.QueryValueEx(child, "InstallLocation")[0]).strip()
+                            except OSError:
+                                location = ""
+                            if location:
+                                result.append(Path(location) / "5EClient.exe")
+                            try:
+                                icon = _display_icon_path(winreg.QueryValueEx(child, "DisplayIcon")[0])
+                            except OSError:
+                                icon = None
+                            if icon is not None:
+                                result.append(icon)
+                    except OSError:
+                        continue
+    return result
+
+
+def _fivee_executable_candidates() -> Iterable[tuple[Path, str]]:
     explicit = os.getenv("CS_SCOUT_5E_EXE", "").strip()
     if explicit:
-        candidates.append(Path(os.path.expandvars(os.path.expanduser(explicit))))
+        yield Path(os.path.expandvars(os.path.expanduser(explicit))), "environment"
+    saved = _load_saved_5e_executable()
+    if saved is not None:
+        yield saved, "saved"
+    for path in _running_5e_executable_paths():
+        yield path, "running_process"
+    for path in _registry_5e_executable_paths():
+        yield path, "registry"
     for env_name in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
         root = os.getenv(env_name, "").strip()
-        if root:
-            candidates.extend((
-                Path(root) / "5EClient" / "5EClient.exe",
-                Path(root) / "5EPlay" / "5EClient.exe",
-            ))
-    candidates.append(Path(r"C:\Program Files\5EClient\5EClient.exe"))
+        if not root:
+            continue
+        for relative in (
+            ("5EClient", "5EClient.exe"),
+            ("5EPlay", "5EClient.exe"),
+            ("5E对战平台", "5EClient.exe"),
+            ("5EClient.exe",),
+        ):
+            yield Path(root).joinpath(*relative), "default"
+    yield Path(r"C:\Program Files\5EClient\5EClient.exe"), "default"
+
+
+def locate_5e_executable() -> dict[str, object]:
     seen: set[str] = set()
-    for candidate in candidates:
+    for candidate, source in _fivee_executable_candidates():
         try:
-            resolved = str(candidate.resolve(strict=True))
+            resolved = candidate.expanduser().resolve(strict=True)
         except (OSError, RuntimeError):
             continue
-        key = resolved.casefold()
+        key = str(resolved).casefold()
         if key in seen:
             continue
         seen.add(key)
-        if Path(resolved).is_file() and Path(resolved).name.casefold() == "5eclient.exe":
-            return resolved
-    return ""
+        if resolved.is_file() and resolved.name.casefold() == "5eclient.exe":
+            return {
+                "found": True,
+                "path": str(resolved),
+                "source": source,
+                "message": "已找到 5E 客户端",
+            }
+    return {
+        "found": False,
+        "path": "",
+        "source": "",
+        "message": "未找到 5E 客户端，请选择 5EClient.exe",
+    }
+
+
+def find_5e_executable() -> str:
+    """Return a local 5E executable from portable discovery sources."""
+    result = locate_5e_executable()
+    return str(result["path"]) if result["found"] else ""
 
 
 def _fivee_running_via_powershell() -> bool | None:
@@ -874,6 +1056,103 @@ def _official_5e_signature(executable: str) -> bool:
     )
 
 
+def _show_5e_executable_picker() -> Path | None:
+    if sys.platform != "win32":
+        return None
+    script = (
+        "$OutputEncoding=[Text.UTF8Encoding]::new($false);"
+        "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);"
+        "Add-Type -AssemblyName System.Windows.Forms;"
+        "$owner=New-Object System.Windows.Forms.Form;"
+        "$owner.TopMost=$true;$owner.ShowInTaskbar=$false;$owner.Opacity=0;"
+        "$dialog=New-Object System.Windows.Forms.OpenFileDialog;"
+        "$dialog.Title='选择 5EClient.exe';"
+        "$dialog.Filter='5E 客户端 (5EClient.exe)|5EClient.exe';"
+        "$dialog.CheckFileExists=$true;$dialog.Multiselect=$false;"
+        "$result=$dialog.ShowDialog($owner);$owner.Dispose();"
+        "if($result -eq [System.Windows.Forms.DialogResult]::OK){"
+        "[Console]::Out.Write($dialog.FileName)}"
+    )
+    try:
+        completed = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-STA", "-Command", script],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=300,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = completed.stdout.strip()
+    return Path(value).resolve() if completed.returncode == 0 and value else None
+
+
+def configure_5e_executable(selected: str | os.PathLike[str]) -> dict[str, object]:
+    try:
+        path = Path(selected).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        return {
+            "ready": False,
+            "code": "invalid_path",
+            "message": "选择的 5E 程序不存在",
+            "path": "",
+        }
+    if not path.is_file() or path.name.casefold() != "5eclient.exe":
+        return {
+            "ready": False,
+            "code": "wrong_file",
+            "message": "请选择官方 5EClient.exe",
+            "path": str(path),
+        }
+    if not _official_5e_signature(str(path)):
+        return {
+            "ready": False,
+            "code": "invalid_signature",
+            "message": "所选程序未通过 5E 官方签名验证",
+            "path": str(path),
+        }
+    _save_5e_executable(path)
+    return {
+        "ready": True,
+        "code": "ready",
+        "message": "已记住 5E 客户端位置",
+        "path": str(path),
+    }
+
+
+def choose_5e_executable() -> dict[str, object]:
+    selected = _show_5e_executable_picker()
+    if selected is None:
+        located = locate_5e_executable()
+        return {"selected": False, "cancelled": True, "executable": located}
+    result = configure_5e_executable(selected)
+    return {
+        "selected": bool(result["ready"]),
+        "cancelled": False,
+        "executable": result,
+    }
+
+
+def _loopback_port_in_use(port: int) -> bool:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.25)
+            return probe.connect_ex(("127.0.0.1", int(port))) == 0
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def _free_loopback_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        return int(listener.getsockname()[1])
+
+
 def launch_5e_with_cdp(executable: str, port: int) -> None:
     """Start (never restart) the official client with loopback-only CDP."""
     path = Path(executable).resolve(strict=True)
@@ -1037,8 +1316,11 @@ class FiveEAutoScoutService:
         self._next_match_retry = 0.0
         self._targets_first_seen = 0.0
         self._launched_by_scout = False
+        self._launch_started_at = 0.0
         self._last_launch_failed = False
         self._next_launch_attempt = 0.0
+        self._client_was_running = False
+        self._last_cdp_owned = False
         self._candidate_teams: dict[str, list[dict]] = {}
         self._state = {
             "platform": "fivee",
@@ -1048,6 +1330,12 @@ class FiveEAutoScoutService:
             "manual_fallback": False,
             "client_running": False,
             "launched_by_scout": False,
+            "connection_code": "initializing",
+            "last_error": "",
+            "needs_executable": False,
+            "executable_found": False,
+            "executable_path": "",
+            "cdp_listening": False,
             "cdp_port": self.cdp_port,
             "max_demos": self.max_demos,
             "mode": self.mode,
@@ -1067,7 +1355,11 @@ class FiveEAutoScoutService:
 
     def snapshot(self) -> dict[str, object]:
         with self._lock:
-            return deepcopy(self._state)
+            snapshot = deepcopy(self._state)
+            snapshot["monitor_running"] = bool(
+                self._thread and self._thread.is_alive()
+            )
+            return snapshot
 
     def _update(self, **changes) -> None:
         with self._lock:
@@ -1108,7 +1400,45 @@ class FiveEAutoScoutService:
                 self._state["max_demos"] = max_demos
                 self._state["mode"] = mode
                 self._state["updated_at"] = time.time()
+                if self._state.get("phase") in {"manual", "connecting"}:
+                    self._last_launch_failed = False
+                    self._next_launch_attempt = 0.0
+                    if not self._state.get("client_running"):
+                        self._launched_by_scout = False
+                        self._launch_started_at = 0.0
             return {"max_demos": self.max_demos, "mode": self.mode, "busy": busy}
+
+    def choose_executable(self) -> dict[str, object]:
+        selected = choose_5e_executable()
+        executable = selected.get("executable", {})
+        if selected.get("selected") and executable.get("ready"):
+            with self._lock:
+                self._launched_by_scout = False
+                self._launch_started_at = 0.0
+                self._last_launch_failed = False
+                self._next_launch_attempt = 0.0
+                self._state.update({
+                    "phase": "connecting",
+                    "message": "已选择 5E，正在准备自动启动…",
+                    "connection_code": "executable_selected",
+                    "last_error": "",
+                    "needs_executable": False,
+                    "executable_found": True,
+                    "executable_path": str(executable.get("path") or ""),
+                    "manual_fallback": False,
+                    "updated_at": time.time(),
+                })
+        elif not selected.get("cancelled"):
+            self._connection_state(
+                phase="manual",
+                message=str(executable.get("message") or "所选 5E 程序不可用"),
+                connection_code=str(executable.get("code") or "invalid_executable"),
+                last_error=str(executable.get("message") or "invalid executable"),
+                needs_executable=True,
+                executable_found=False,
+                manual_fallback=True,
+            )
+        return selected
 
     def select_own_team(self, team_id: str) -> dict[str, object]:
         with self._lock:
@@ -1204,6 +1534,8 @@ class FiveEAutoScoutService:
         return self._websocket_module
 
     def _cdp_targets(self) -> list[dict]:
+        with self._lock:
+            self._last_cdp_owned = False
         with self._http_lock:
             response = self._http.get(
                 f"http://127.0.0.1:{self.cdp_port}/json/list",
@@ -1212,6 +1544,8 @@ class FiveEAutoScoutService:
         response.raise_for_status()
         if not cdp_listener_is_5e(self.cdp_port):
             raise RuntimeError("CDP listener is not owned by 5EClient.exe")
+        with self._lock:
+            self._last_cdp_owned = True
         targets = response.json()
         if not isinstance(targets, list):
             raise RuntimeError("CDP target list is not an array")
@@ -1232,6 +1566,11 @@ class FiveEAutoScoutService:
     def _connection_state(self, *, phase: str, message: str, **changes) -> None:
         with self._lock:
             current_phase = self._state.get("phase")
+            previous = (
+                str(self._state.get("phase") or ""),
+                str(self._state.get("connection_code") or ""),
+                str(self._state.get("message") or ""),
+            )
             protected = current_phase in {
                 "detected", "awaiting_team_selection", "awaiting_confirmation",
                 "queued", "analyzing", "ready",
@@ -1249,129 +1588,274 @@ class FiveEAutoScoutService:
                         "team_options": [],
                     })
             self._state["updated_at"] = time.time()
+            current = (
+                str(self._state.get("phase") or ""),
+                str(self._state.get("connection_code") or ""),
+                str(self._state.get("message") or ""),
+            )
+        if current != previous:
+            log.info("5E state [%s]: %s", current[1] or current[0], current[2])
 
     def _supervisor_loop(self) -> None:
         while not self._stop.is_set():
             try:
-                self._websocket()
-            except ImportError:
+                self._supervisor_iteration()
+                self._prune_target_workers()
+                self._expire_stale_candidate()
+                self._retry_pending_match()
+            except Exception as exc:
+                log.exception("5E automatic scout supervisor failed")
                 self._connection_state(
                     phase="manual",
-                    message="5E 自动监听组件未安装，可暂时手动输入用户名",
+                    message="5E 自动侦察发生异常，请选择程序或切换手动模式",
+                    connection_code="monitor_error",
+                    last_error=type(exc).__name__,
                     auto_available=False,
                     manual_fallback=True,
                 )
-                self._stop.wait(10)
-                continue
-
-            try:
-                targets = self._cdp_targets()
-            except Exception:
-                targets = []
-
-            if targets:
-                now = time.monotonic()
-                if not self._targets_first_seen:
-                    self._targets_first_seen = now
-                self._start_target_workers(targets)
-                with self._lock:
-                    connected = bool(self._connected_target_ids)
-                if not connected:
-                    elapsed = now - self._targets_first_seen
-                    self._connection_state(
-                        phase="manual" if elapsed >= 10 else "connecting",
-                        message=(
-                            "无法建立 5E 自动侦察连接，可暂时手动输入用户名"
-                            if elapsed >= 10 else "正在建立 5E 自动侦察连接…"
-                        ),
-                        auto_available=False,
-                        manual_fallback=elapsed >= 10,
-                        client_running=True,
-                        launched_by_scout=self._launched_by_scout,
-                    )
-            else:
-                self._targets_first_seen = 0.0
-                running = is_5e_running()
-                now = time.monotonic()
-                if running is False and self.auto_launch:
-                    executable = find_5e_executable()
-                    if executable and now >= self._next_launch_attempt:
-                        self._next_launch_attempt = now + 120
-                        try:
-                            launch_5e_with_cdp(executable, self.cdp_port)
-                            self._launched_by_scout = True
-                            self._last_launch_failed = False
-                            self._connection_state(
-                                phase="connecting",
-                                message="正在启动 5E 并连接自动侦察；如出现 Windows 确认，请允许",
-                                auto_available=False,
-                                manual_fallback=False,
-                                client_running=True,
-                                launched_by_scout=True,
-                            )
-                        except Exception:
-                            self._last_launch_failed = True
-                            log.exception("Could not launch 5E with loopback CDP")
-                            self._connection_state(
-                                phase="manual",
-                                message="无法自动启动 5E，可暂时手动输入用户名",
-                                auto_available=False,
-                                manual_fallback=True,
-                                client_running=False,
-                            )
-                    elif not executable:
-                        self._connection_state(
-                            phase="manual",
-                            message="未找到 5E 客户端，可暂时手动输入用户名",
-                            auto_available=False,
-                            manual_fallback=True,
-                            client_running=False,
-                        )
-                    elif self._last_launch_failed:
-                        self._connection_state(
-                            phase="manual",
-                            message="Windows 未能启动 5E 自动侦察，可暂时手动输入用户名",
-                            auto_available=False,
-                            manual_fallback=True,
-                            client_running=False,
-                        )
-                    else:
-                        self._connection_state(
-                            phase="connecting",
-                            message="正在等待 5E 自动侦察端口…",
-                            auto_available=False,
-                            manual_fallback=False,
-                            client_running=False,
-                        )
-                elif running is True:
-                    self._connection_state(
-                        phase="manual",
-                        message="5E 已运行但未开放自动侦察；退出 5E 后，CS-Scout 会自动重新启动它。当前可手动输入用户名",
-                        auto_available=False,
-                        manual_fallback=True,
-                        client_running=True,
-                    )
-                elif running is False:
-                    self._connection_state(
-                        phase="manual",
-                        message="当前系统不支持自动启动 5E，可手动输入用户名",
-                        auto_available=False,
-                        manual_fallback=True,
-                        client_running=False,
-                    )
-                else:
-                    self._connection_state(
-                        phase="manual",
-                        message="无法确认 5E 是否正在运行，可暂时手动输入用户名",
-                        auto_available=False,
-                        manual_fallback=True,
-                        client_running=False,
-                    )
-
-            self._prune_target_workers()
-            self._expire_stale_candidate()
-            self._retry_pending_match()
             self._stop.wait(CDP_RETRY_SECONDS)
+
+    def _supervisor_iteration(self) -> None:
+        try:
+            self._websocket()
+        except ImportError:
+            self._connection_state(
+                phase="manual",
+                message="5E 自动监听组件未安装，请切换手动模式",
+                connection_code="websocket_missing",
+                last_error="websocket-client is not installed",
+                auto_available=False,
+                manual_fallback=True,
+            )
+            return
+
+        try:
+            targets = self._cdp_targets()
+        except Exception:
+            with self._lock:
+                self._last_cdp_owned = False
+            targets = []
+
+        if targets:
+            now = time.monotonic()
+            self._client_was_running = True
+            if not self._targets_first_seen:
+                self._targets_first_seen = now
+            self._start_target_workers(targets)
+            with self._lock:
+                connected = bool(self._connected_target_ids)
+            if not connected:
+                elapsed = now - self._targets_first_seen
+                self._connection_state(
+                    phase="manual" if elapsed >= 10 else "connecting",
+                    message=(
+                        "5E 页面连接失败，请重新打开 5E 或切换手动模式"
+                        if elapsed >= 10 else "已找到 5E 页面，正在建立监听…"
+                    ),
+                    connection_code=(
+                        "websocket_failed" if elapsed >= 10 else "websocket_connecting"
+                    ),
+                    last_error="CDP WebSocket handshake failed" if elapsed >= 10 else "",
+                    auto_available=False,
+                    manual_fallback=elapsed >= 10,
+                    client_running=True,
+                    cdp_listening=True,
+                    launched_by_scout=self._launched_by_scout,
+                )
+            return
+
+        self._targets_first_seen = 0.0
+        with self._lock:
+            listener_owned = self._last_cdp_owned
+        if listener_owned:
+            self._client_was_running = True
+            self._connection_state(
+                phase="connecting",
+                message="已连接 5E，等待平台页面…",
+                connection_code="listener_waiting_page",
+                last_error="",
+                auto_available=False,
+                manual_fallback=False,
+                client_running=True,
+                cdp_listening=True,
+                needs_executable=False,
+                launched_by_scout=self._launched_by_scout,
+            )
+            return
+
+        running = is_5e_running()
+        now = time.monotonic()
+        if running is True:
+            self._client_was_running = True
+            elapsed = now - self._launch_started_at if self._launch_started_at else 0.0
+            if self._launched_by_scout and elapsed < CLIENT_LAUNCH_TIMEOUT:
+                self._connection_state(
+                    phase="connecting",
+                    message="5E 已启动，正在等待自动侦察端口…",
+                    connection_code="waiting_for_cdp",
+                    last_error="",
+                    auto_available=False,
+                    manual_fallback=False,
+                    client_running=True,
+                    cdp_listening=False,
+                    launched_by_scout=True,
+                )
+            else:
+                self._last_launch_failed = bool(self._launched_by_scout)
+                self._connection_state(
+                    phase="manual",
+                    message=(
+                        "5E 已启动但未开放自动侦察，请完全退出 5E；CS-Scout 随后会自动启动它"
+                    ),
+                    connection_code="client_running_without_cdp",
+                    last_error="5E is running without a compatible CDP listener",
+                    auto_available=False,
+                    manual_fallback=True,
+                    client_running=True,
+                    cdp_listening=False,
+                    launched_by_scout=self._launched_by_scout,
+                )
+            return
+
+        if running is None:
+            self._connection_state(
+                phase="manual",
+                message="无法确认 5E 是否正在运行，请选择程序或切换手动模式",
+                connection_code="process_check_failed",
+                last_error="Could not inspect 5E process state",
+                auto_available=False,
+                manual_fallback=True,
+                client_running=False,
+                cdp_listening=False,
+            )
+            return
+
+        if self._client_was_running:
+            previously_launched = self._launched_by_scout
+            self._client_was_running = False
+            self._launch_started_at = 0.0
+            self._launched_by_scout = False
+            self._next_launch_attempt = 0.0
+            if previously_launched:
+                self._last_launch_failed = True
+
+        if not self.auto_launch:
+            self._connection_state(
+                phase="manual",
+                message="当前设置未启用 5E 自动启动，请切换手动模式",
+                connection_code="auto_launch_disabled",
+                last_error="",
+                auto_available=False,
+                manual_fallback=True,
+                client_running=False,
+                cdp_listening=False,
+            )
+            return
+
+        if self._last_launch_failed:
+            self._connection_state(
+                phase="manual",
+                message="上次未能启动 5E，请重新选择程序或再次进入自动模式",
+                connection_code="previous_launch_failed",
+                last_error="Previous 5E launch failed",
+                auto_available=False,
+                manual_fallback=True,
+                client_running=False,
+                cdp_listening=False,
+                needs_executable=True,
+            )
+            return
+
+        if self._launched_by_scout and self._launch_started_at:
+            elapsed = now - self._launch_started_at
+            if elapsed < CLIENT_LAUNCH_TIMEOUT:
+                self._connection_state(
+                    phase="connecting",
+                    message="正在启动 5E，请确认 Windows 权限提示…",
+                    connection_code="launching",
+                    last_error="",
+                    auto_available=False,
+                    manual_fallback=False,
+                    client_running=False,
+                    cdp_listening=False,
+                    launched_by_scout=True,
+                )
+            else:
+                self._last_launch_failed = True
+                self._connection_state(
+                    phase="manual",
+                    message="5E 在 30 秒内未能启动，请重新选择程序或切换手动模式",
+                    connection_code="launch_timeout",
+                    last_error="5E did not start within 30 seconds",
+                    auto_available=False,
+                    manual_fallback=True,
+                    client_running=False,
+                    cdp_listening=False,
+                )
+            return
+
+        located = locate_5e_executable()
+        if not located["found"]:
+            self._connection_state(
+                phase="manual",
+                message=str(located["message"]),
+                connection_code="executable_not_found",
+                last_error="5EClient.exe was not found",
+                auto_available=False,
+                manual_fallback=True,
+                client_running=False,
+                cdp_listening=False,
+                needs_executable=True,
+                executable_found=False,
+                executable_path="",
+            )
+            return
+
+        executable = str(located["path"])
+        if _loopback_port_in_use(self.cdp_port) and not cdp_listener_is_5e(self.cdp_port):
+            previous_port = self.cdp_port
+            self.cdp_port = _free_loopback_port()
+            log.info("5E CDP port %s was occupied; selected %s", previous_port, self.cdp_port)
+
+        try:
+            launch_5e_with_cdp(executable, self.cdp_port)
+        except Exception as exc:
+            self._last_launch_failed = True
+            log.exception("Could not launch 5E with loopback CDP")
+            self._connection_state(
+                phase="manual",
+                message="无法启动 5E，请重新选择程序或切换手动模式",
+                connection_code="launch_failed",
+                last_error=type(exc).__name__,
+                auto_available=False,
+                manual_fallback=True,
+                client_running=False,
+                cdp_listening=False,
+                needs_executable=True,
+                executable_found=True,
+                executable_path=executable,
+            )
+            return
+
+        self._launched_by_scout = True
+        self._launch_started_at = now
+        self._last_launch_failed = False
+        self._next_launch_attempt = now + CLIENT_LAUNCH_TIMEOUT
+        self._connection_state(
+            phase="connecting",
+            message="正在启动 5E，请确认 Windows 权限提示…",
+            connection_code="launching",
+            last_error="",
+            auto_available=False,
+            manual_fallback=False,
+            client_running=False,
+            cdp_listening=False,
+            launched_by_scout=True,
+            needs_executable=False,
+            executable_found=True,
+            executable_path=executable,
+            cdp_port=self.cdp_port,
+        )
 
     def _start_target_workers(self, targets: list[dict]) -> None:
         with self._lock:
@@ -1445,9 +1929,13 @@ class FiveEAutoScoutService:
             self._connection_state(
                 phase="waiting",
                 message="已连接 5E，等待匹配到对局…",
+                connection_code="connected",
+                last_error="",
                 auto_available=True,
                 manual_fallback=False,
                 client_running=True,
+                cdp_listening=True,
+                needs_executable=False,
                 launched_by_scout=self._launched_by_scout,
             )
             while not self._stop.is_set():

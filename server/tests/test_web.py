@@ -720,12 +720,24 @@ def test_fivee_routes_detect_confirm_and_start_shared_pipeline(
             self.started = 0
             self.phase = "awaiting_confirmation"
             self.analysis_started = 0
+            self.executable_selections = 0
 
         def start(self):
             self.started += 1
 
         def configure(self, *, max_demos, mode):
             return {"max_demos": max_demos, "mode": mode, "busy": False}
+
+        def choose_executable(self):
+            self.executable_selections += 1
+            return {
+                "selected": True,
+                "cancelled": False,
+                "executable": {
+                    "ready": True,
+                    "path": r"D:\Games\5E\5EClient.exe",
+                },
+            }
 
         def snapshot(self):
             return {
@@ -777,6 +789,15 @@ def test_fivee_routes_detect_confirm_and_start_shared_pipeline(
     assert status.status_code == 200
     assert status.get_json()["platform"] == "fivee"
     assert status.headers["Cache-Control"] == "no-store"
+
+    missing_marker = client.post("/api/5e/exe/select")
+    assert missing_marker.status_code == 403
+    executable = client.post(
+        "/api/5e/exe/select", headers={"X-CS-Scout-Request": "1"}
+    )
+    assert executable.status_code == 200
+    assert executable.get_json()["selected"] is True
+    assert service.executable_selections == 1
 
     selected = client.post("/api/5e/team", json={"team": "t1"})
     assert selected.status_code == 200

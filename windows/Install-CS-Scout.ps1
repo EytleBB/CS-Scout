@@ -389,7 +389,7 @@ try {
     Write-Step "Checking the installation"
     & $venvPython -m pip check
     Assert-LastExitCode "Checking installed dependencies"
-    & $venvPython -c "import sys; sys.path.insert(0, sys.argv[1]); import cryptography, flask, requests, pandas, numpy, demoparser2, websocket, fivee_monitor, perfectworld_experiment.web_server; print('Runtime imports: OK')" (Join-Path $projectRoot "server")
+    & $venvPython -c "import sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[2]); import cryptography, flask, requests, pandas, numpy, demoparser2, websocket, fivee_monitor, perfectworld_experiment.web_server; print('Runtime imports: OK')" $projectRoot (Join-Path $projectRoot "server")
     Assert-LastExitCode "Importing runtime packages"
 
     Write-Host "`nInstallation is ready." -ForegroundColor Green
