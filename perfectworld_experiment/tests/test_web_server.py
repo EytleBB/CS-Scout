@@ -29,7 +29,14 @@ def test_auto_scout_depth_can_change_only_between_analyses():
     assert service.snapshot()["max_demos"] == 7
 
 
-def test_auto_scout_requires_confirmation_before_analysis():
+def test_auto_scout_requires_confirmation_before_analysis(monkeypatch):
+    monkeypatch.setattr(
+        "perfectworld_experiment.native_signer.get_dll_status",
+        lambda **_kwargs: {
+            "ready": True, "code": "ready", "message": "ready",
+            "path": "C:/client/plugin/PvpAlive.dll", "source": "test",
+        },
+    )
     service = AutoScoutService(max_demos=3)
 
     assert service.request_analysis() == {"accepted": False, "phase": "waiting"}
@@ -38,3 +45,42 @@ def test_auto_scout_requires_confirmation_before_analysis():
     assert service.request_analysis() == {"accepted": True, "phase": "queued"}
     assert service.snapshot()["phase"] == "queued"
     assert service._analysis_requested.is_set()
+
+
+def test_auto_scout_blocks_analysis_when_official_component_is_unavailable(
+    monkeypatch
+):
+    monkeypatch.setattr(
+        "perfectworld_experiment.native_signer.get_dll_status",
+        lambda **_kwargs: {
+            "ready": False, "code": "invalid_signature",
+            "message": "完美平台组件签名无效", "path": None, "source": None,
+        },
+    )
+    service = AutoScoutService(max_demos=3)
+    service._update(phase="awaiting_confirmation")
+
+    result = service.request_analysis()
+
+    assert result["accepted"] is False
+    assert result["phase"] == "setup_required"
+    assert result["error"] == "完美平台组件签名无效"
+    assert service.snapshot()["phase"] == "setup_required"
+
+
+def test_auto_scout_cancel_keeps_task_in_cancelling_until_worker_stops():
+    service = AutoScoutService(max_demos=3)
+    service._update(
+        phase="analyzing",
+        targets=[{"username": "Opponent"}],
+        map="de_mirage",
+    )
+
+    cancelled = service.cancel_analysis()
+
+    assert cancelled == {"accepted": True, "phase": "cancelling"}
+    assert service._analysis_cancel.is_set()
+    snapshot = service.snapshot()
+    assert snapshot["phase"] == "cancelling"
+    assert snapshot["targets"] == [{"username": "Opponent"}]
+    assert snapshot["map"] == "de_mirage"

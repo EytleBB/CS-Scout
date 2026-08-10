@@ -2,15 +2,16 @@
 
 > 面向 CS2 赛前准备的 5E / 完美平台 Demo 分析与多回合浏览器回放工具。
 
-5E 模式输入最多 5 个用户名和一张地图；完美平台模式在进入对局后自动识别
-地图与对手。两种模式都会检索、下载并解析历史 Demo，然后把每名玩家的移动路径、投掷物和死亡时间输出为 JSON。浏览器使用
+Windows 本地版的 5E 与完美平台都可选择“自动 / 手动”。自动模式会在匹配到对局后
+识别地图和 5 名对手，用户确认名单后再分析；手动模式允许直接选择地图并输入用户名。
+两种方式都会使用当前所选平台的历史 Demo。分析会把每名玩家的移动路径、投掷物和死亡时间输出为 JSON。浏览器使用
 Canvas 将多个回合叠加为同步回放，不在服务器端渲染热力图。
 
 ## Windows 玩家下载版
 
 普通玩家不需要部署服务器。请从
-[GitHub Releases](https://github.com/EytleBB/CS-Scout/releases/latest) 下载名称类似
-`CS-Scout-Windows-x64-v2.1.0.zip` 的独立 Windows 发布包，完整解压后依次双击：
+[v2.1.1-alpha.1 预发行页面](https://github.com/EytleBB/CS-Scout/releases/tag/v2.1.1-alpha.1) 下载
+`CS-Scout-Windows-x64-v2.1.1-alpha.1.zip`，完整解压后依次双击：
 
 1. `windows\Install-CS-Scout.cmd`：创建独立 Python 环境并安装固定版本依赖；
 2. `windows\Start-CS-Scout.cmd`：启动仅本机可访问的服务并打开浏览器，无需输入密钥。
@@ -25,7 +26,8 @@ Canvas 将多个回合叠加为同步回放，不在服务器端渲染热力图�
 ## 主要功能
 
 - 左侧栏可直接切换“5E / 完美平台”，两种平台共用同一套回放界面。
-- 5E 支持手动输入最多 5 名玩家；完美平台匹配到对局后自动识别地图和 5 名对手，以只读用户名供用户确认，再点击“开始分析”，无需手动输入用户名或 Token。每人可选 1–10 场 Demo。
+- Windows 本地版可在 5E 和完美平台下分别选择“自动 / 手动”。自动模式识别地图和 5 名对手并等待确认；手动模式开放地图和最多 5 个用户名输入。每人可选 1–10 场 Demo。
+- 完美平台组件会从运行中客户端、上次选择目录和默认目录自动定位；找不到时可直接在网页选择安装目录，并自动验证官方签名、32 位架构与必需导出。
 - 支持 CT/T 全局切换、统一播放/暂停、可拖动时间轴，以及 1x / 2x / 4x 播放速度（默认 2x）。
 - 回放区顶部用“手枪局（全员）”和各玩家用户名按钮切换，CT/T 固定在选择栏右侧；用户名按钮显示该玩家
   的 Buy 回合，任一时刻只显示一个完整雷达。
@@ -47,11 +49,12 @@ Canvas 将多个回合叠加为同步回放，不在服务器端渲染热力图�
     │ 平台切换
     ▼
 Flask（server/web_server.py）
-    ├─ 5E：POST /api/analyze
-    │    ├─ 普通：pipeline.run(...)
+    ├─ 5E 自动：/api/5e/* → 本机 CDP/Comet 监听 → 用户确认
+    │    └─ 5E 手动：/api/analyze → 用户名查询 → pipeline.run(...)
     │    └─ 快速：pipeline.run_fast(...)
     └─ 完美：/api/pwa/*
-         └─ 按需启动本地对局监听 → 自动识别对手 → 用户确认 → 历史 Demo 分析
+         ├─ 自动：本地对局监听 → 识别对手 → 用户确认
+         └─ 手动：用户名解析 → 完美平台历史 Demo 分析
     ▼
 两种平台各自保存输出，共用 ReplayPlayer 浏览器渲染
 ```
@@ -61,6 +64,7 @@ Flask（server/web_server.py）
 | 文件 | 作用 |
 |---|---|
 | `server/api_client.py` | 5E Arena/Gate 查询、历史比赛分页和 Demo 下载 |
+| `server/fivee_monitor.py` | 5E 客户端 CDP 连接、Comet 帧解析、对局与敌方识别 |
 | `server/pipeline.py` | 普通/快速流水线、Demo 去重与同比赛 single-flight、磁盘清理 |
 | `server/parse.py` | 回合分类、位置、投掷物和死亡时间解析 |
 | `server/combat.py` | K/D 与 AWP 持有率统计 |
@@ -216,7 +220,8 @@ demos_analysis/g161-n-20260123174821830606429_de_mirage.dem
 
 ## 数据与限制
 
-- 5E 用户名发生变更后，旧比赛中按用户名解析 Steam ID 可能失败。
+- 5E 自动模式会优先使用对局中的稳定 domain 与 SteamID；手动回退模式遇到改名或重名时仍可能搜索失败。
+- 5E 自动侦察只在 Windows 本地版启用。若 5E 已经以普通方式运行且没有开放 CDP，CS-Scout 不会强制结束它；退出 5E 后，CS-Scout 会带本机回环调试参数重新启动。官方客户端要求管理员权限时，Windows 会显示一次标准 UAC 确认。
 - 没有目标地图历史 Demo 的玩家会出现在失败列表中，不会阻断其他玩家。
 - 5E 接口或网络故障会与“有效查询但没有比赛”分别报告。
 - `server/demos_opponents/`、`server/output/` 和生成的地图资源均为运行时数据，

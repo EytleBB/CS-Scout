@@ -12,6 +12,7 @@ import re
 import socket
 import tempfile
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import requests
@@ -30,9 +31,11 @@ DOWNLOAD_TIMEOUT = 120
 DOWNLOAD_MAX_REDIRECTS = 5
 GATE_PAGE_SIZE = 30
 GATE_MAX_PAGES = 30
+GATE_DETAIL_WORKERS = 12
 PUBLIC_MATCH_TYPES = (9, None, 1, 8)
 _DOMAIN_RE = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
 _MATCH_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
+_STEAMID64_RE = re.compile(r"765\d{14}\Z")
 _DATE_RELATIVE_DEMO_RE = re.compile(r"\d{8}/")
 _WINDOWS_RESERVED_NAMES = frozenset(
     {"CON", "PRN", "AUX", "NUL"}
@@ -190,6 +193,13 @@ def _build_retrying_session():
 
 _SESSION = _build_retrying_session()
 _SESSION_LOCAL = threading.local()
+# Resolving a usable demo URL requires one detail request for every matching
+# history row. A shared pool overlaps those waits without multiplying the
+# concurrency limit for each player discovered by fast mode.
+_GATE_DETAIL_POOL = ThreadPoolExecutor(
+    max_workers=GATE_DETAIL_WORKERS,
+    thread_name_prefix="cs-scout-gate-detail",
+)
 
 
 def _session():
@@ -359,6 +369,25 @@ def _matches_map(match, map_name):
     return isinstance(value, str) and value.casefold() == map_name.casefold()
 
 
+def _gate_demo_from_detail(player_uuid, match_code):
+    """Resolve one authoritative demo URL and the target's Steam ID."""
+    detail = get_match_detail(match_code)
+    if not isinstance(detail, dict):
+        raise RuntimeError("match detail data is not an object")
+
+    main = detail.get("main")
+    demo_url = main.get("demo_url") if isinstance(main, dict) else None
+    if not demo_url:
+        return None
+
+    result = {"match_code": match_code, "demo_url": demo_url}
+    for player in _extract_players(detail):
+        if player.get("uuid") == player_uuid and player.get("steamid"):
+            result["steamid"] = str(player["steamid"])
+            break
+    return result
+
+
 def _get_gate_demos(player_uuid, map_name, count):
     """Scan bounded Gate history and resolve authoritative detail URLs."""
     results = []
@@ -378,6 +407,7 @@ def _get_gate_demos(player_uuid, map_name, count):
                 )
                 return results
             raise
+        page_candidates = []
         for match in matches:
             match_code = _match_code(match)
             if (
@@ -387,19 +417,28 @@ def _get_gate_demos(player_uuid, map_name, count):
             ):
                 continue
             seen_codes.add(match_code)
+            page_candidates.append(match_code)
+
+        # Detail responses are independent. Keep newest-first result order,
+        # but resolve the page concurrently through the global bounded pool.
+        detail_futures = [
+            (
+                match_code,
+                _GATE_DETAIL_POOL.submit(
+                    _gate_demo_from_detail, player_uuid, match_code
+                ),
+            )
+            for match_code in page_candidates
+        ]
+        for match_code, future in detail_futures:
             try:
-                detail = get_match_detail(match_code)
-                if not isinstance(detail, dict):
-                    raise RuntimeError("match detail data is not an object")
+                result = future.result()
             except Exception as e:
                 detail_errors.append((match_code, e))
                 log.warning("Demo detail lookup for %s failed: %s", match_code, e)
                 continue
-
-            main = detail.get("main")
-            demo_url = main.get("demo_url") if isinstance(main, dict) else None
-            if demo_url:
-                results.append({"match_code": match_code, "demo_url": demo_url})
+            if result:
+                results.append(result)
                 if len(results) >= count:
                     return results
 
@@ -542,6 +581,62 @@ def get_steamid_for_player(match_code, username, domain=None):
     except Exception as e:
         log.warning(f"get_steamid_for_player({match_code}) failed: {e}")
     return None
+
+
+def resolve_player_identity(username, *, max_matches=5):
+    """Resolve a display username to one stable 5E identity.
+
+    This lightweight helper is also used by Perfect World's manual mode: the
+    operator can keep entering a familiar username while the Perfect client
+    still receives the SteamID64 it needs for history discovery.  A SteamID64
+    may be entered directly when a player cannot be found by display name.
+    """
+    if not isinstance(username, str) or not username.strip():
+        raise ValueError("username must be a non-empty string")
+    value = username.strip()
+    if _STEAMID64_RE.fullmatch(value):
+        return {"username": value, "domain": "", "steamid": value}
+    try:
+        match_limit = max(1, min(20, int(max_matches)))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("max_matches must be an integer") from exc
+
+    domain, matched_username = search_player(value)
+    if not domain:
+        raise LookupError(f"未找到玩家：{value}")
+
+    checked = set()
+    source_succeeded = False
+    source_errors = []
+    for match_type in PUBLIC_MATCH_TYPES:
+        try:
+            matches = _get_public_matches(domain, match_type)
+            source_succeeded = True
+        except Exception as exc:
+            source_errors.append(exc)
+            continue
+        for match in matches:
+            match_code = _match_code(match)
+            if not match_code or match_code in checked:
+                continue
+            checked.add(match_code)
+            steamid = get_steamid_for_player(
+                match_code, matched_username or value, domain=domain
+            )
+            if isinstance(steamid, str) and _STEAMID64_RE.fullmatch(steamid):
+                return {
+                    "username": matched_username or value,
+                    "domain": domain,
+                    "steamid": steamid,
+                }
+            if len(checked) >= match_limit:
+                break
+        if len(checked) >= match_limit:
+            break
+
+    if not source_succeeded and source_errors:
+        raise DemoLookupError(f"玩家身份查询失败：{source_errors[-1]}")
+    raise LookupError(f"无法解析玩家 SteamID：{matched_username or value}")
 
 
 # ── Demo download ─────────────────────────────────────────────────────────────

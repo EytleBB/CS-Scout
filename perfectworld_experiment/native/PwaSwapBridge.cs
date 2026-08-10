@@ -37,16 +37,17 @@ internal static class PwaSwapBridge
         Console.OutputEncoding = new UTF8Encoding(false);
 
         bool queryCurrent = args.Length == 2 && args[0] == "--current";
-        if (args.Length != 1 && !queryCurrent)
+        bool probe = args.Length == 2 && args[0] == "--probe";
+        if (args.Length != 1 && !queryCurrent && !probe)
         {
-            Console.Error.WriteLine("usage: PwaSwapBridge.exe [--current] <PvpAlive.dll>");
+            Console.Error.WriteLine("usage: PwaSwapBridge.exe [--current|--probe] <PvpAlive.dll>");
             return 2;
         }
 
-        string dllPath = Path.GetFullPath(args[queryCurrent ? 1 : 0]);
+        string dllPath = Path.GetFullPath(args[(queryCurrent || probe) ? 1 : 0]);
         string dllDirectory = Path.GetDirectoryName(dllPath);
-        string payload = queryCurrent ? "" : Console.In.ReadToEnd();
-        if (!queryCurrent && String.IsNullOrEmpty(payload))
+        string payload = (queryCurrent || probe) ? "" : Console.In.ReadToEnd();
+        if (!queryCurrent && !probe && String.IsNullOrEmpty(payload))
         {
             Console.Error.WriteLine("empty swapData payload");
             return 2;
@@ -69,6 +70,9 @@ internal static class PwaSwapBridge
         {
             if (queryCurrent)
                 return QueryCurrentIngameParameters(module);
+
+            if (probe)
+                return GetProcAddress(module, "swapData") == IntPtr.Zero ? 1 : 0;
 
             IntPtr export = GetProcAddress(module, "swapData");
             if (export == IntPtr.Zero)

@@ -3,10 +3,12 @@ import json
 import logging
 import ntpath
 import os
+import re
 import shutil
 import stat
 import tempfile
 import threading
+import time
 import zipfile
 import multiprocessing
 import zlib
@@ -31,6 +33,15 @@ _WINDOWS_RESERVED_NAMES = {
     *(f"COM{i}" for i in range(1, 10)),
     *(f"LPT{i}" for i in range(1, 10)),
 }
+
+
+class AnalysisCancelled(RuntimeError):
+    """Raised when the active analysis was cancelled by the user."""
+
+
+def _raise_if_cancelled(cancel_event):
+    if cancel_event is not None and cancel_event.is_set():
+        raise AnalysisCancelled("分析已取消")
 
 
 def _path_is_within(base_dir, path):
@@ -570,7 +581,7 @@ def _finish_task_storage(budget):
 
 # ── Download + extract ────────────────────────────────────────────────────────
 
-def download_and_extract(match_id, demo_url, dest_dir):
+def download_and_extract(match_id, demo_url, dest_dir, progress_cb=None):
     """Download one match once, even when fast workers request it together."""
     try:
         match_id = api_client.validate_match_id(match_id)
@@ -581,12 +592,14 @@ def download_and_extract(match_id, demo_url, dest_dir):
     lock_entry = _reserve_match_download_lock(match_id)
     try:
         with lock_entry["lock"]:
-            return _download_and_extract_once(match_id, demo_url, dest_dir)
+            return _download_and_extract_once(
+                match_id, demo_url, dest_dir, progress_cb=progress_cb
+            )
     finally:
         _release_match_download_lock(match_id, lock_entry)
 
 
-def _download_and_extract_once(match_id, demo_url, dest_dir):
+def _download_and_extract_once(match_id, demo_url, dest_dir, progress_cb=None):
     zip_path = None
     workspace_reservation = 0
     budget = _active_disk_budget
@@ -615,9 +628,22 @@ def _download_and_extract_once(match_id, demo_url, dest_dir):
         budget_progress = None
         if budget is not None:
             budget_token, budget_progress = budget.new_download()
+
+        def combined_progress(downloaded, total):
+            if budget_progress is not None:
+                budget_progress(downloaded, total)
+            if progress_cb is not None:
+                progress_cb(downloaded, total)
+
         try:
             api_client.download_demo(
-                real_url, zip_path, progress_cb=budget_progress
+                real_url,
+                zip_path,
+                progress_cb=(
+                    combined_progress
+                    if budget_progress is not None or progress_cb is not None
+                    else None
+                ),
             )
         finally:
             if budget is not None and budget_token is not None:
@@ -660,39 +686,83 @@ def _download_and_extract_once(match_id, demo_url, dest_dir):
 
 # ── Username-based pipeline ──────────────────────────────────────────────────
 
-def _run_normal(usernames, map_name, max_demos=10, progress_cb=None, result_cb=None):
+_STEAM_ID_RE = re.compile(r"765\d{14}\Z")
+
+
+def _validated_player_hint(username, hint):
+    """Validate a CDP-resolved 5E identity or request normal search fallback."""
+    if not isinstance(hint, dict):
+        return None
+    name = str(hint.get("username") or username or "").strip()
+    steamid = str(hint.get("steamid") or "").strip()
+    try:
+        domain = api_client.validate_domain(hint.get("domain"))
+    except ValueError:
+        return None
+    if not name or not _STEAM_ID_RE.fullmatch(steamid):
+        return None
+    return {"username": name, "domain": domain, "steamid": steamid}
+
+
+def _run_normal(
+    usernames, map_name, max_demos=10, progress_cb=None, result_cb=None,
+    player_hints=None, cancel_event=None,
+):
     total = len(usernames)
     dl_queue = Queue(maxsize=10)
 
     def emit_progress(i, name, step, msg):
+        _raise_if_cancelled(cancel_event)
         if not progress_cb:
             return
         try:
             progress_cb(i, total, name, step, msg)
         except Exception:
             log.exception("Progress callback failed for %s", name)
+        _raise_if_cancelled(cancel_event)
 
     def _download_player(i, username):
+        _raise_if_cancelled(cancel_event)
         def cb(step, msg, _i=i, _n=username):
             emit_progress(_i, _n, step, msg)
-        cb(0, f"搜索 {username}...")
-        domain, matched = api_client.search_player(username)
-        if not domain:
-            dl_queue.put({"type":"player_failed","i":i,"username":username,
-                          "reason":"5E 上未找到该玩家"})
+        hints_required = player_hints is not None
+        raw_hint = None
+        if isinstance(player_hints, (list, tuple)) and i < len(player_hints):
+            raw_hint = player_hints[i]
+        hint = _validated_player_hint(username, raw_hint)
+        if hints_required and not hint:
+            dl_queue.put({
+                "type": "player_failed", "i": i, "username": username,
+                "reason": "自动识别到的玩家标识不完整，请重新匹配或使用手动模式",
+            })
             return
-        name = matched or username
-        try:
-            domain = api_client.validate_domain(domain)
-        except ValueError:
-            dl_queue.put({"type":"player_failed","i":i,"username":name,
-                          "reason":"玩家标识无效"})
-            return
+        if hint:
+            name = hint["username"]
+            domain = hint["domain"]
+            steamid = hint["steamid"]
+            cb(0, f"准备 {name}...")
+        else:
+            cb(0, f"搜索 {username}...")
+            domain, matched = api_client.search_player(username)
+            _raise_if_cancelled(cancel_event)
+            if not domain:
+                dl_queue.put({"type":"player_failed","i":i,"username":username,
+                              "reason":"5E 上未找到该玩家"})
+                return
+            name = matched or username
+            try:
+                domain = api_client.validate_domain(domain)
+            except ValueError:
+                dl_queue.put({"type":"player_failed","i":i,"username":name,
+                              "reason":"玩家标识无效"})
+                return
+            steamid = None
         cb(1, f"获取 {map_name} demo 列表...")
         try:
             demos = api_client.get_demos_by_domain(
                 domain, map_name, count=max_demos
             )
+            _raise_if_cancelled(cancel_event)
         except api_client.DemoLookupError as e:
             dl_queue.put({"type":"player_failed","i":i,"username":name,
                           "reason":f"获取 demo 列表失败：{e}"})
@@ -714,7 +784,11 @@ def _run_normal(usernames, map_name, max_demos=10, progress_cb=None, result_cb=N
             demo_url = demo.get("demo_url")
             if not isinstance(demo_url, str) or not demo_url:
                 continue
-            safe_demos.append({"match_code": match_code, "demo_url": demo_url})
+            safe_demo = {"match_code": match_code, "demo_url": demo_url}
+            discovered_steamid = str(demo.get("steamid") or "").strip()
+            if _STEAM_ID_RE.fullmatch(discovered_steamid):
+                safe_demo["steamid"] = discovered_steamid
+            safe_demos.append(safe_demo)
         if not safe_demos:
             dl_queue.put({"type":"player_failed","i":i,"username":name,
                           "reason":"demo 列表包含无效比赛标识"})
@@ -722,12 +796,18 @@ def _run_normal(usernames, map_name, max_demos=10, progress_cb=None, result_cb=N
         demos = safe_demos
 
         cb(2, "解析 Steam ID...")
-        steamid = None
+        if not steamid:
+            steamid = next(
+                (demo.get("steamid") for demo in demos if demo.get("steamid")),
+                None,
+            )
         for m in demos[:3]:
+            _raise_if_cancelled(cancel_event)
+            if steamid:
+                break
             steamid = api_client.get_steamid_for_player(
                 m["match_code"], name, domain=domain
             )
-            if steamid: break
         if not steamid:
             dl_queue.put({"type":"player_failed","i":i,"username":name,
                           "reason":"无法解析 Steam ID"})
@@ -736,8 +816,10 @@ def _run_normal(usernames, map_name, max_demos=10, progress_cb=None, result_cb=N
         opp_dir = _safe_join(config.DEMO_DIR, domain)
         dem_idx = 0
         for mi, m in enumerate(demos):
+            _raise_if_cancelled(cancel_event)
             cb(3, f"下载 demo {mi+1}/{len(demos)}...")
             for f in download_and_extract(m["match_code"], m["demo_url"], opp_dir):
+                _raise_if_cancelled(cancel_event)
                 dl_queue.put({"type":"demo","i":i,**base,"dem_file":f,"dem_idx":dem_idx})
                 dem_idx += 1
         if dem_idx == 0:
@@ -750,7 +832,10 @@ def _run_normal(usernames, map_name, max_demos=10, progress_cb=None, result_cb=N
         try:
             for i, username in enumerate(usernames):
                 try:
+                    _raise_if_cancelled(cancel_event)
                     _download_player(i, username)
+                except AnalysisCancelled:
+                    break
                 except Exception as e:
                     log.exception("Unexpected download-stage error for %s", username)
                     detail = str(e) or type(e).__name__
@@ -764,15 +849,19 @@ def _run_normal(usernames, map_name, max_demos=10, progress_cb=None, result_cb=N
 
     results, failed = [], []
     rec, demf = {}, {}
+    cancelled = False
     while True:
         item = dl_queue.get()
         if item is None: break
+        if cancel_event is not None and cancel_event.is_set():
+            cancelled = True
+            continue
         t, i, name = item["type"], item["i"], item["username"]
         def cb(step, msg, _i=i, _n=name):
             emit_progress(_i, _n, step, msg)
         if t == "player_failed":
             rec.pop(i, None); demf.pop(i, None)
-            failed.append({"username":name,"reason":item["reason"]}); cb(0, item["reason"]); continue
+            failed.append({"username":name,"reason":item["reason"]}); cb(6, item["reason"]); continue
         if t == "demo":
             rec.setdefault(i, []); demf.setdefault(i, [])
             demf[i].append(item["dem_file"])
@@ -789,7 +878,8 @@ def _run_normal(usernames, map_name, max_demos=10, progress_cb=None, result_cb=N
         if t == "player_done":
             rounds = rec.pop(i, []); files = demf.pop(i, [])
             if not rounds:
-                failed.append({"username":name,"reason":"未找到可用回合数据"}); continue
+                reason = "未找到可用回合数据"
+                failed.append({"username":name,"reason":reason}); cb(6, reason); continue
             cb(5, "生成回放数据...")
             parsed_stats = []
             for dem_file in files:
@@ -825,7 +915,7 @@ def _run_normal(usernames, map_name, max_demos=10, progress_cb=None, result_cb=N
                 log.exception("Could not build player result for %s", name)
                 reason = f"生成回放数据失败：{str(e) or type(e).__name__}"
                 failed.append({"username":name,"reason":reason})
-                cb(0, reason)
+                cb(6, reason)
                 continue
 
             results.append(result)
@@ -834,6 +924,9 @@ def _run_normal(usernames, map_name, max_demos=10, progress_cb=None, result_cb=N
                     result_cb(result.copy())
                 except Exception:
                     log.exception("Result callback failed for %s", name)
+
+    if cancelled or (cancel_event is not None and cancel_event.is_set()):
+        raise AnalysisCancelled("分析已取消")
 
     os.makedirs(config.OUTPUT_DIR, exist_ok=True)
     summary = {"map":map_name,"max_demos":max_demos,"mode":"normal",
@@ -846,13 +939,18 @@ def _run_normal(usernames, map_name, max_demos=10, progress_cb=None, result_cb=N
     return results, failed
 
 
-def run(usernames, map_name, max_demos=10, progress_cb=None, result_cb=None):
+def run(
+    usernames, map_name, max_demos=10, progress_cb=None, result_cb=None,
+    player_hints=None, cancel_event=None,
+):
     """Run the stable pipeline within one bounded demo-storage task."""
     budget = _begin_task_storage()
     try:
         return _run_normal(
             usernames, map_name, max_demos=max_demos,
             progress_cb=progress_cb, result_cb=result_cb,
+            player_hints=player_hints,
+            cancel_event=cancel_event,
         )
     finally:
         _finish_task_storage(budget)
@@ -860,20 +958,36 @@ def run(usernames, map_name, max_demos=10, progress_cb=None, result_cb=None):
 
 # ── Fast concurrent pipeline ─────────────────────────────────────────────────
 
-def _prepare_fast_player(i, username, map_name, max_demos, emit_progress):
+def _prepare_fast_player(
+    i, username, map_name, max_demos, emit_progress, player_hint=None,
+    require_hint=False,
+):
     """Resolve one player and return immutable work metadata for fast mode."""
     def cb(step, msg):
         emit_progress(i, username, step, msg)
 
-    cb(0, f"搜索 {username}...")
-    domain, matched = api_client.search_player(username)
-    if not domain:
-        return None, {"username": username, "reason": "5E 上未找到该玩家"}
-    name = matched or username
-    try:
-        domain = api_client.validate_domain(domain)
-    except ValueError:
-        return None, {"username": name, "reason": "玩家标识无效"}
+    hint = _validated_player_hint(username, player_hint)
+    if require_hint and not hint:
+        return None, {
+            "username": username,
+            "reason": "自动识别到的玩家标识不完整，请重新匹配或使用手动模式",
+        }
+    if hint:
+        name = hint["username"]
+        domain = hint["domain"]
+        steamid = hint["steamid"]
+        cb(0, f"准备 {name}...")
+    else:
+        cb(0, f"搜索 {username}...")
+        domain, matched = api_client.search_player(username)
+        if not domain:
+            return None, {"username": username, "reason": "5E 上未找到该玩家"}
+        name = matched or username
+        try:
+            domain = api_client.validate_domain(domain)
+        except ValueError:
+            return None, {"username": name, "reason": "玩家标识无效"}
+        steamid = None
 
     emit_progress(i, name, 1, f"获取 {map_name} demo 列表...")
     try:
@@ -900,7 +1014,11 @@ def _prepare_fast_player(i, username, map_name, max_demos, emit_progress):
         demo_url = demo.get("demo_url")
         if not isinstance(demo_url, str) or not demo_url:
             continue
-        safe_demos.append({"match_code": match_code, "demo_url": demo_url})
+        safe_demo = {"match_code": match_code, "demo_url": demo_url}
+        discovered_steamid = str(demo.get("steamid") or "").strip()
+        if _STEAM_ID_RE.fullmatch(discovered_steamid):
+            safe_demo["steamid"] = discovered_steamid
+        safe_demos.append(safe_demo)
     if not safe_demos:
         return None, {
             "username": name,
@@ -908,13 +1026,21 @@ def _prepare_fast_player(i, username, map_name, max_demos, emit_progress):
         }
 
     emit_progress(i, name, 2, "解析 Steam ID...")
-    steamid = None
+    if not steamid:
+        steamid = next(
+            (
+                demo.get("steamid")
+                for demo in safe_demos
+                if demo.get("steamid")
+            ),
+            None,
+        )
     for demo in safe_demos[:3]:
+        if steamid:
+            break
         steamid = api_client.get_steamid_for_player(
             demo["match_code"], name, domain=domain
         )
-        if steamid:
-            break
     if not steamid:
         return None, {"username": name, "reason": "无法解析 Steam ID"}
 
@@ -929,30 +1055,92 @@ def _prepare_fast_player(i, username, map_name, max_demos, emit_progress):
     }, None
 
 
-def _download_fast_demo(context, demo_order, emit_progress):
+class _FastDownloadProgress:
+    """Thread-safe aggregate byte progress for one player's parallel demos."""
+
+    def __init__(self, context, emit_progress):
+        self._context = context
+        self._emit_progress = emit_progress
+        self._total = len(context["demos"])
+        self._fractions = [0.0] * self._total
+        self._processed = set()
+        self._last_percent = -1
+        self._last_emit = 0.0
+        self._lock = threading.Lock()
+
+    def _snapshot(self, force=False):
+        now = time.monotonic()
+        percent = int(round(
+            100.0 * sum(self._fractions) / max(1, self._total)
+        ))
+        if not force and percent < self._last_percent + 2 and now - self._last_emit < 1.0:
+            return None
+        self._last_percent = max(self._last_percent, percent)
+        self._last_emit = now
+        return len(self._processed), max(self._last_percent, percent)
+
+    def update(self, demo_order, downloaded, total):
+        with self._lock:
+            if total:
+                self._fractions[demo_order] = max(
+                    self._fractions[demo_order],
+                    min(1.0, max(0.0, float(downloaded) / float(total))),
+                )
+            snapshot = self._snapshot()
+        if snapshot is not None:
+            self._emit(*snapshot)
+
+    def finish(self, demo_order):
+        with self._lock:
+            self._fractions[demo_order] = 1.0
+            self._processed.add(demo_order)
+            snapshot = self._snapshot(force=True)
+        self._emit(*snapshot)
+
+    def _emit(self, processed, percent):
+        self._emit_progress(
+            self._context["i"], self._context["username"], 3,
+            f"下载 demo {processed}/{self._total} · {percent}%...",
+        )
+
+
+def _download_fast_demo(context, demo_order, download_progress):
     demo = context["demos"][demo_order]
-    emit_progress(
-        context["i"], context["username"], 3,
-        f"快速下载 demo {demo_order + 1}/{len(context['demos'])}...",
-    )
-    return download_and_extract(
-        demo["match_code"], demo["demo_url"], context["opp_dir"]
-    )
+    try:
+        return download_and_extract(
+            demo["match_code"], demo["demo_url"], context["opp_dir"],
+            progress_cb=lambda downloaded, total: download_progress.update(
+                demo_order, downloaded, total
+            ),
+        )
+    finally:
+        # A 404 or a cached/shared match is still completed work from the
+        # task's point of view, even when no byte callback was emitted.
+        download_progress.finish(demo_order)
 
 
 def _parse_fast_demo_worker(steamid, demo_order, file_order, dem_file):
     """Process-safe CPU task; all arguments and results are picklable."""
+    parser = None
+    events = None
+    classified = None
     try:
-        records = parse.parse_demo(dem_file, steamid) or []
+        records, parser, events, classified = parse.parse_demo_with_context(
+            dem_file, steamid
+        )
+        records = records or []
     except Exception:
         log.exception("Demo parse failed unexpectedly: %s", dem_file)
         records = []
 
     stats = None
-    try:
-        stats = combat.parse_combat_stats(dem_file, steamid)
-    except Exception:
-        log.exception("Combat parse failed unexpectedly: %s", dem_file)
+    if parser is not None and events is not None:
+        try:
+            stats = combat.parse_combat_stats_from_context(
+                parser, events, steamid, classified=classified
+            )
+        except Exception:
+            log.exception("Combat parse failed unexpectedly: %s", dem_file)
     return {
         "demo_order": demo_order,
         "file_order": file_order,
@@ -1084,7 +1272,8 @@ def _new_fast_parse_executor(workers):
 
 def _run_fast(
     usernames, map_name, max_demos=10, progress_cb=None, result_cb=None,
-    download_workers=None, parse_workers=None,
+    download_workers=None, parse_workers=None, player_hints=None,
+    cancel_event=None,
 ):
     """Run discovery, downloads and parsing concurrently.
 
@@ -1093,6 +1282,7 @@ def _run_fast(
     username/demo order even though progress and incremental results may finish
     out of order.
     """
+    _raise_if_cancelled(cancel_event)
     total = len(usernames)
     download_worker_count = _resolve_fast_workers(
         download_workers, config.FAST_DOWNLOAD_WORKERS, 32
@@ -1104,8 +1294,16 @@ def _run_fast(
         parse_worker_count = _memory_safe_parse_workers(parse_worker_count)
     discovery_worker_count = max(1, min(5, total or 1))
     progress_lock = threading.Lock()
+    pending = {}
+
+    def cancel_pending():
+        for future in list(pending):
+            future.cancel()
 
     def emit_progress(i, name, step, msg):
+        if cancel_event is not None and cancel_event.is_set():
+            cancel_pending()
+            raise AnalysisCancelled("分析已取消")
         if not progress_cb:
             return
         try:
@@ -1113,6 +1311,9 @@ def _run_fast(
                 progress_cb(i, total, name, step, msg)
         except Exception:
             log.exception("Progress callback failed for %s", name)
+        if cancel_event is not None and cancel_event.is_set():
+            cancel_pending()
+            raise AnalysisCancelled("分析已取消")
 
     results_by_index = {}
     failures_by_index = {}
@@ -1122,7 +1323,7 @@ def _run_fast(
         if i in results_by_index or i in failures_by_index:
             return
         failures_by_index[i] = {"username": username, "reason": reason}
-        emit_progress(i, username, 0, reason)
+        emit_progress(i, username, 6, reason)
 
     def maybe_finalize(i):
         state = states.get(i)
@@ -1175,22 +1376,92 @@ def _run_fast(
         ) as download_pool,
         _new_fast_parse_executor(parse_worker_count) as parse_pool,
     ):
-        pending = {}
+        initial_player_download_limit = max(
+            1,
+            (download_worker_count + max(1, total) - 1) // max(1, total),
+        )
+        preparations_remaining = total
+
+        def submit_player_download(i):
+            state = states[i]
+            context = state["context"]
+            demo_order = state["next_download_order"]
+            state["next_download_order"] += 1
+            state["downloads_inflight"] += 1
+            download_future = download_pool.submit(
+                _download_fast_demo,
+                context,
+                demo_order,
+                state["download_progress"],
+            )
+            pending[download_future] = (
+                "download", i, (context, demo_order)
+            )
+
+        def schedule_available_downloads(preferred=None):
+            active = sum(
+                state["downloads_inflight"] for state in states.values()
+            )
+            if preparations_remaining > 0:
+                if preferred not in states:
+                    return
+                state = states[preferred]
+                while (
+                    active < download_worker_count
+                    and state["downloads_inflight"] < initial_player_download_limit
+                    and state["next_download_order"] < state["download_total"]
+                ):
+                    submit_player_download(preferred)
+                    active += 1
+                return
+
+            # Once every discovery has resolved (including failures), lend all
+            # unused slots to the least-loaded unfinished player. This keeps
+            # the first wave fair without slowing a scan where only one or two
+            # names have downloadable history.
+            while active < download_worker_count:
+                candidates = [
+                    i for i, state in states.items()
+                    if state["next_download_order"] < state["download_total"]
+                ]
+                if not candidates:
+                    return
+                player_index = min(
+                    candidates,
+                    key=lambda i: (states[i]["downloads_inflight"], i),
+                )
+                submit_player_download(player_index)
+                active += 1
+
         for i, username in enumerate(usernames):
+            player_hint = None
+            if isinstance(player_hints, (list, tuple)) and i < len(player_hints):
+                player_hint = player_hints[i]
             future = discovery_pool.submit(
                 _prepare_fast_player, i, username, map_name, max_demos,
-                emit_progress,
+                emit_progress, player_hint, player_hints is not None,
             )
             pending[future] = ("prepare", i, username)
 
         while pending:
-            completed, _ = wait(tuple(pending), return_when=FIRST_COMPLETED)
+            if cancel_event is not None and cancel_event.is_set():
+                cancel_pending()
+                raise AnalysisCancelled("分析已取消")
+            completed, _ = wait(
+                tuple(pending), timeout=0.2, return_when=FIRST_COMPLETED
+            )
+            if not completed:
+                continue
             touched_players = set()
             for future in completed:
+                if cancel_event is not None and cancel_event.is_set():
+                    cancel_pending()
+                    raise AnalysisCancelled("分析已取消")
                 kind, i, payload = pending.pop(future)
                 touched_players.add(i)
 
                 if kind == "prepare":
+                    preparations_remaining -= 1
                     try:
                         context, failure = future.result()
                     except Exception as exc:
@@ -1199,27 +1470,28 @@ def _run_fast(
                             i, payload,
                             f"处理玩家失败：{str(exc) or type(exc).__name__}",
                         )
+                        schedule_available_downloads()
                         continue
                     if failure:
                         record_failure(i, failure["username"], failure["reason"])
+                        schedule_available_downloads()
                         continue
                     states[i] = {
                         "context": context,
                         "download_total": len(context["demos"]),
+                        "next_download_order": 0,
+                        "downloads_inflight": 0,
                         "downloads_done": 0,
                         "downloaded_files": 0,
                         "parse_pending": 0,
+                        "parses_done": 0,
                         "entries": [],
                         "finalized": False,
                     }
-                    for demo_order in range(len(context["demos"])):
-                        download_future = download_pool.submit(
-                            _download_fast_demo, context, demo_order,
-                            emit_progress,
-                        )
-                        pending[download_future] = (
-                            "download", i, (context, demo_order)
-                        )
+                    states[i]["download_progress"] = _FastDownloadProgress(
+                        context, emit_progress
+                    )
+                    schedule_available_downloads(i)
                     continue
 
                 state = states[i]
@@ -1227,6 +1499,7 @@ def _run_fast(
                 if kind == "download":
                     _, demo_order = payload
                     state["downloads_done"] += 1
+                    state["downloads_inflight"] -= 1
                     try:
                         dem_files = future.result() or []
                     except Exception:
@@ -1239,10 +1512,6 @@ def _run_fast(
                         dem_files = []
                     state["downloaded_files"] += len(dem_files)
                     for file_order, dem_file in enumerate(dem_files):
-                        emit_progress(
-                            i, context["username"], 4,
-                            f"并行解析 demo {demo_order + 1}/{len(context['demos'])}...",
-                        )
                         state["parse_pending"] += 1
                         try:
                             parse_future = parse_pool.submit(
@@ -1269,10 +1538,20 @@ def _run_fast(
                         pending[parse_future] = (
                             "parse", i, (demo_order, file_order, dem_file)
                         )
+                    schedule_available_downloads(i)
+                    if (
+                        state["downloads_done"] == state["download_total"]
+                        and state["downloaded_files"] > 0
+                    ):
+                        emit_progress(
+                            i, context["username"], 4,
+                            f"解析 demo {state['parses_done']}/{state['download_total']}...",
+                        )
                     continue
 
                 demo_order, file_order, dem_file = payload
                 state["parse_pending"] -= 1
+                state["parses_done"] += 1
                 try:
                     entry = future.result()
                 except Exception:
@@ -1285,9 +1564,16 @@ def _run_fast(
                         "combat_stats": None,
                     }
                 state["entries"].append(entry)
+                if state["downloads_done"] == state["download_total"]:
+                    emit_progress(
+                        i, context["username"], 4,
+                        f"解析 demo {state['parses_done']}/{state['download_total']}...",
+                    )
 
             for player_index in touched_players:
                 maybe_finalize(player_index)
+
+    _raise_if_cancelled(cancel_event)
 
     results = [results_by_index[i] for i in sorted(results_by_index)]
     failed = [failures_by_index[i] for i in sorted(failures_by_index)]
@@ -1312,7 +1598,8 @@ def _run_fast(
 
 def run_fast(
     usernames, map_name, max_demos=10, progress_cb=None, result_cb=None,
-    download_workers=None, parse_workers=None,
+    download_workers=None, parse_workers=None, player_hints=None,
+    cancel_event=None,
 ):
     """Run the fast pipeline within one bounded demo-storage task."""
     budget = _begin_task_storage()
@@ -1321,6 +1608,8 @@ def run_fast(
             usernames, map_name, max_demos=max_demos,
             progress_cb=progress_cb, result_cb=result_cb,
             download_workers=download_workers, parse_workers=parse_workers,
+            player_hints=player_hints,
+            cancel_event=cancel_event,
         )
     finally:
         _finish_task_storage(budget)

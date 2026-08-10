@@ -226,6 +226,328 @@ if (run.disabled || modes.some(button => button.disabled) ||
     assert result.returncode == 0, result.stderr or result.stdout
 
 
+def test_local_scout_mode_switches_between_readonly_auto_and_saved_manual_names():
+    script = f"""
+const {{ setScoutMode }} = require({json.dumps(os.path.abspath(APP_JS))});
+
+function classes(initial = []) {{
+  const values = new Set(initial);
+  return {{
+    toggle(name, enabled) {{ if (enabled) values.add(name); else values.delete(name); }},
+    contains(name) {{ return values.has(name); }}
+  }};
+}}
+function button(mode) {{
+  return {{
+    dataset: {{ scoutMode: mode }}, disabled: false,
+    classList: classes(mode === "auto" ? ["active"] : []),
+    attributes: {{}},
+    setAttribute(name, value) {{ this.attributes[name] = String(value); }},
+    addEventListener() {{}}
+  }};
+}}
+function input(value = "") {{
+  return {{
+    value, readOnly: true, disabled: false, placeholder: "", attributes: {{}},
+    setAttribute(name, value) {{ this.attributes[name] = String(value); }},
+    addEventListener() {{}}
+  }};
+}}
+
+const scoutModes = [button("auto"), button("manual")];
+const elements = {{
+  "#run": {{ disabled: true, textContent: "", classList: classes() }},
+  "#map": {{ value: "de_mirage", disabled: true }},
+  "#depth": input("2"),
+  "#status": {{ textContent: "" }},
+  "#u0": input(), "#u1": input(), "#u2": input(), "#u3": input(), "#u4": input()
+}};
+global.document = {{
+  body: {{ dataset: {{ localAnalysis: "true" }} }},
+  activeElement: null,
+  querySelector(selector) {{ return elements[selector] || null; }},
+  querySelectorAll(selector) {{
+    if (selector === "[data-scout-mode]") return scoutModes;
+    return [];
+  }},
+  addEventListener() {{}}
+}};
+global.fetch = async (url, options = {{}}) => {{
+  if (url === "/api/5e/config") return {{
+    ok: true, status: 200,
+    async json() {{ return {{ max_demos: 2, mode: "normal" }}; }}
+  }};
+  if (url === "/api/5e/status") return {{
+    ok: true, status: 200,
+    async json() {{ return {{
+      platform: "fivee", phase: "waiting", message: "等待对局",
+      manual_fallback: false, needs_map: false, mode: "normal",
+      targets: [], team_options: [], analysis_busy: false
+    }}; }}
+  }};
+  throw new Error(`unexpected URL: ${{url}}`);
+}};
+
+(async () => {{
+  await setScoutMode("manual");
+  if (elements["#u0"].readOnly || elements["#run"].disabled) {{
+    throw new Error("manual mode did not unlock inputs and analysis");
+  }}
+  if (!scoutModes[1].classList.contains("active") ||
+      scoutModes[1].attributes["aria-pressed"] !== "true") {{
+    throw new Error("manual mode button did not become active");
+  }}
+
+  elements["#u0"].value = "Alpha";
+  await setScoutMode("auto");
+  if (!elements["#u0"].readOnly || !elements["#map"].disabled ||
+      !scoutModes[0].classList.contains("active")) {{
+    throw new Error("automatic mode did not restore readonly controls");
+  }}
+
+  await setScoutMode("manual");
+  if (elements["#u0"].value !== "Alpha") {{
+    throw new Error("manual username was not restored after switching modes");
+  }}
+}})().catch(error => {{ console.error(error); process.exit(1); }});
+"""
+    result = subprocess.run(
+        [NODE, "-e", script], capture_output=True, text=True, timeout=15, check=False
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_running_button_cancels_and_unlocks_for_retry():
+    script = f"""
+const {{ setAnalysisBusy, runAnalysis }} = require({json.dumps(os.path.abspath(APP_JS))});
+
+function element() {{
+  const classes = new Set();
+  return {{
+    value: "", disabled: false, hidden: false, textContent: "",
+    dataset: {{}}, attributes: {{}}, children: [],
+    classList: {{
+      toggle(name, enabled) {{ if (enabled) classes.add(name); else classes.delete(name); }},
+      contains(name) {{ return classes.has(name); }}
+    }},
+    setAttribute(name, value) {{ this.attributes[name] = String(value); }},
+    replaceChildren(...children) {{ this.children = children; }}
+  }};
+}}
+
+const run = element();
+const status = element();
+global.document = {{
+  body: {{ dataset: {{ localAnalysis: "true" }} }},
+  querySelector(selector) {{
+    if (selector === "#run") return run;
+    if (selector === "#status") return status;
+    return null;
+  }},
+  querySelectorAll() {{ return []; }},
+  createElement() {{ return element(); }}
+}};
+
+let releaseCancel;
+const requests = [];
+global.fetch = async (url) => {{
+  requests.push(url);
+  if (url === "/api/cancel") {{
+    await new Promise(resolve => {{ releaseCancel = resolve; }});
+    return {{ ok: true, status: 202, async json() {{ return {{ status: "cancelling" }}; }} }};
+  }}
+  if (url === "/api/5e/status") return {{
+    ok: true, status: 200,
+    async json() {{ return {{
+      platform: "fivee", phase: "awaiting_confirmation",
+      message: "分析已取消，可重新开始", analysis_busy: false,
+      targets: [], team_options: []
+    }}; }}
+  }};
+  throw new Error(`unexpected URL: ${{url}}`);
+}};
+
+(async () => {{
+  setAnalysisBusy(true, {{ cancellable: true }});
+  if (run.disabled || run.textContent !== "取消分析" ||
+      !run.classList.contains("cancel-action")) {{
+    throw new Error("running task did not expose the cancel action");
+  }}
+  const task = runAnalysis();
+  await new Promise(resolve => setImmediate(resolve));
+  if (!run.disabled || run.textContent !== "正在取消…") {{
+    throw new Error("cancel request did not enter a protected cancelling state");
+  }}
+  releaseCancel();
+  await task;
+  if (JSON.stringify(requests) !== JSON.stringify(["/api/cancel", "/api/5e/status"])) {{
+    throw new Error(`wrong cancel requests: ${{JSON.stringify(requests)}}`);
+  }}
+  if (run.disabled || run.textContent !== "开始分析" ||
+      run.classList.contains("cancel-action")) {{
+    throw new Error("cancelled task did not unlock for retry");
+  }}
+}})().catch(error => {{ console.error(error); process.exitCode = 1; }});
+"""
+    result = subprocess.run(
+        [NODE, "-e", script],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_local_fivee_mode_click_is_saved_and_not_reverted_by_stale_status():
+    script = f"""
+const {{ wireControls }} = require({json.dumps(os.path.abspath(APP_JS))});
+
+function button(mode) {{
+  const classes = new Set(mode === "normal" ? ["active"] : []);
+  return {{
+    dataset: {{ analysisMode: mode }}, disabled: false, listeners: {{}}, attributes: {{}},
+    classList: {{
+      toggle(name, enabled) {{ if (enabled) classes.add(name); else classes.delete(name); }},
+      contains(name) {{ return classes.has(name); }}
+    }},
+    setAttribute(name, value) {{ this.attributes[name] = String(value); }},
+    addEventListener(name, handler) {{ this.listeners[name] = handler; }}
+  }};
+}}
+
+const modes = [button("normal"), button("fast")];
+const depth = {{ value: "2", disabled: false }};
+const run = {{ disabled: false }};
+global.document = {{
+  body: {{ dataset: {{ localAnalysis: "true" }} }},
+  activeElement: null,
+  querySelector(selector) {{
+    if (selector === "#depth") return depth;
+    if (selector === "#run") return run;
+    return null;
+  }},
+  querySelectorAll(selector) {{
+    if (selector === "[data-analysis-mode]") return modes;
+    if (selector === "[data-playback-speed]" || selector === "[data-platform]" ||
+        selector === "#fivee-team-choice button") return [];
+    return [];
+  }},
+  addEventListener() {{}}
+}};
+
+let releaseConfig;
+const requests = [];
+global.fetch = async (url, options) => {{
+  requests.push([url, options]);
+  if (url !== "/api/5e/config") throw new Error(`unexpected URL: ${{url}}`);
+  await new Promise(resolve => {{ releaseConfig = resolve; }});
+  return {{ ok: true, status: 200, async json() {{ return {{ mode: "fast", max_demos: 2 }}; }} }};
+}};
+
+(async () => {{
+  wireControls();
+  modes[1].listeners.click();
+  await new Promise(resolve => setImmediate(resolve));
+  if (!modes[1].classList.contains("active") || !modes[0].disabled || !modes[1].disabled) {{
+    throw new Error("fast mode was not held while the server configuration was pending");
+  }}
+  if (requests.length !== 1) throw new Error(`mode click sent ${{requests.length}} requests`);
+  const body = JSON.parse(requests[0][1].body);
+  if (body.mode !== "fast" || body.max_demos !== 2) {{
+    throw new Error(`wrong 5E configuration: ${{requests[0][1].body}}`);
+  }}
+  releaseConfig();
+  await new Promise(resolve => setImmediate(resolve));
+  if (!modes[1].classList.contains("active") || modes[0].classList.contains("active") ||
+      modes.some(item => item.disabled)) {{
+    throw new Error("confirmed fast mode did not stay selected and unlock");
+  }}
+}})().catch(error => {{ console.error(error); process.exitCode = 1; }});
+"""
+    result = subprocess.run(
+        [NODE, "-e", script],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_progress_card_calculates_parallel_progress_and_collapses_failures():
+    script = f"""
+const {{ renderAnalysisProgress }} = require({json.dumps(os.path.abspath(APP_JS))});
+
+function element() {{
+  return {{
+    textContent: "", hidden: false, open: false, dataset: {{}},
+    style: {{}}, attributes: {{}}, children: [],
+    setAttribute(name, value) {{ this.attributes[name] = String(value); }},
+    replaceChildren(...children) {{ this.children = children; }}
+  }};
+}}
+const elements = {{
+  "#progress-panel": element(), "#progress-track": element(),
+  "#progress-fill": element(), "#progress-count": element(),
+  "#status": element()
+}};
+global.document = {{ querySelector(selector) {{ return elements[selector] || null; }} }};
+
+renderAnalysisProgress({{
+  status: "running", total_players: 5, message: "running",
+  progress: [
+    {{ id: "Alpha", step: 5, msg: "生成回放数据...", updated_at: 1 }},
+    {{ id: "Bravo", step: 3, msg: "下载 demo 2/4...", updated_at: 2 }}
+  ],
+  results: [], failed: []
+}}, true);
+
+if (elements["#progress-fill"].style.width !== "28%" ||
+    elements["#progress-count"].textContent !== "0/5 · 28%") {{
+  throw new Error(`wrong overall progress: ${{JSON.stringify(elements)}}`);
+}}
+if (!elements["#status"].textContent.startsWith("Bravo · 下载 demo 2/4")) {{
+  throw new Error(`latest step was not shown: ${{elements["#status"].textContent}}`);
+}}
+if (elements["#progress-track"].attributes["aria-valuenow"] !== "28" ||
+    elements["#progress-panel"].dataset.state !== "running") {{
+  throw new Error("progress accessibility/state was not updated");
+}}
+
+renderAnalysisProgress({{
+  status: "running", total_players: 1, message: "running",
+  progress: [
+    {{ id: "Alpha", step: 3, msg: "下载 demo 0/6 · 50%...", updated_at: 3 }}
+  ],
+  results: [], failed: []
+}}, true);
+if (elements["#progress-fill"].style.width !== "43%") {{
+  throw new Error(`byte progress was ignored: ${{elements["#progress-fill"].style.width}}`);
+}}
+
+renderAnalysisProgress({{
+  status: "running", total_players: 2, message: "running",
+  progress: [
+    {{ id: "Missing", step: 6, msg: "5E 上未找到该玩家", updated_at: 4 }},
+    {{ id: "Alpha", step: 3, msg: "下载 demo 0/6 · 20%...", updated_at: 5 }}
+  ],
+  results: [], failed: []
+}}, true);
+if (!elements["#progress-count"].textContent.startsWith("1/2 ·")) {{
+  throw new Error(`finished failure was not counted: ${{elements["#progress-count"].textContent}}`);
+}}
+"""
+    result = subprocess.run(
+        [NODE, "-e", script],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
 def test_409_recovery_clears_stale_results_before_polling_other_tab():
     script = f"""
 const {{ runAnalysis }} = require({json.dumps(os.path.abspath(APP_JS))});
@@ -371,13 +693,15 @@ global.fetch = async () => {{ fetchCount += 1; throw new Error("fetch must not r
     assert result.returncode == 0, result.stderr or result.stdout
 
 
-def test_local_frontend_starts_analysis_without_key_or_authorization_header():
+def test_local_frontend_confirms_detected_fivee_match_without_access_key():
     script = f"""
 const {{ runAnalysis }} = require({json.dumps(os.path.abspath(APP_JS))});
 
 function element(overrides = {{}}) {{
   return Object.assign({{
     value: "", disabled: false, hidden: false, textContent: "", children: [],
+    attributes: {{}}, classList: {{ toggle() {{}} }},
+    setAttribute(name, value) {{ this.attributes[name] = String(value); }},
     replaceChildren(...children) {{ this.children = children; }}
   }}, overrides);
 }}
@@ -400,22 +724,30 @@ global.document = {{
 const requests = [];
 global.fetch = async (url, options) => {{
   requests.push([url, options]);
-  if (url === "/api/analyze") return {{
+  if (url === "/api/5e/config") return {{
+    ok: true, status: 200, async json() {{ return {{ max_demos: 1, mode: "normal" }}; }}
+  }};
+  if (url === "/api/5e/analyze") return {{
     ok: true, status: 200, async json() {{ return {{ status: "started" }}; }}
   }};
-  if (url === "/api/status") return {{
+  if (url === "/api/5e/status") return {{
     ok: true, status: 200,
-    async json() {{ return {{ status: "idle", message: "idle", results: [], failed: [] }}; }}
+    async json() {{ return {{
+      platform: "fivee", phase: "ready", message: "done",
+      analysis_busy: false, targets: [], team_options: [],
+      analysis: {{ status: "done", message: "done", results: [], failed: [] }}
+    }}; }}
   }};
   throw new Error(`unexpected URL: ${{url}}`);
 }};
 
 (async () => {{
   await runAnalysis();
-  if (requests.length !== 2 || requests[0][0] !== "/api/analyze") {{
-    throw new Error(`local analysis did not start: ${{JSON.stringify(requests)}}`);
+  if (requests.length !== 3 || requests[0][0] !== "/api/5e/config" ||
+      requests[1][0] !== "/api/5e/analyze" || requests[2][0] !== "/api/5e/status") {{
+    throw new Error(`automatic 5E analysis did not start: ${{JSON.stringify(requests)}}`);
   }}
-  const headers = requests[0][1] && requests[0][1].headers;
+  const headers = requests[1][1] && requests[1][1].headers;
   if (headers && headers.Authorization) {{
     throw new Error("local analysis unexpectedly sent an Authorization header");
   }}

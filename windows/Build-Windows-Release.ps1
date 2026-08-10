@@ -2,7 +2,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$Version = "2.1.0",
+    [string]$Version = "2.1.1-alpha.1",
     [string]$ProjectRoot = "",
     [string]$OutputDirectory = ""
 )
@@ -10,7 +10,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$ExpectedReleaseVersion = "2.1.0"
+$ExpectedReleaseVersion = "2.1.1-alpha.1"
 $ExpectedMaps = @(
     "de_ancient", "de_anubis", "de_dust2", "de_inferno",
     "de_mirage", "de_nuke", "de_overpass", "de_train"
@@ -159,7 +159,8 @@ function Assert-MapMetadata([string]$Path, [string]$MapName) {
 
 function Assert-RuntimeRequirements([string]$Path) {
     $requiredPackages = @(
-        "flask", "requests", "urllib3", "pandas", "numpy", "demoparser2", "gunicorn"
+        "flask", "requests", "urllib3", "pandas", "numpy", "demoparser2",
+        "websocket-client", "gunicorn"
     )
     $found = New-Object "System.Collections.Generic.HashSet[string]" ([System.StringComparer]::OrdinalIgnoreCase)
     $lines = [System.IO.File]::ReadAllLines($Path, $Utf8NoBom)
@@ -194,6 +195,10 @@ function Assert-RuntimeRequirements([string]$Path) {
     Assert-True ($gunicornLines.Count -eq 1) "Expected exactly one pinned gunicorn dependency."
     Assert-True ($gunicornLines[0] -match 'platform_system\s*!=\s*["'']Windows["'']') `
         "gunicorn must remain excluded on Windows by an environment marker."
+    $websocketLines = @($lines | Where-Object { $_ -match '^\s*websocket-client==' })
+    Assert-True ($websocketLines.Count -eq 1) "Expected exactly one pinned websocket-client dependency."
+    Assert-True ($websocketLines[0] -match 'platform_system\s*==\s*["'']Windows["'']') `
+        "websocket-client must remain limited to the Windows desktop runtime."
 }
 
 function Assert-PerfectWorldRequirements([string]$Path) {
@@ -530,8 +535,10 @@ $outputRoot = $null
 $published = $false
 
 try {
-    if ($Version -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
-        throw "Version must be a canonical three-part semantic version (for example, 2.0.0)."
+    $semverIdentifier = '(?:(?:0|[1-9][0-9]*)|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))'
+    $semverPattern = "^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-$semverIdentifier(?:\.$semverIdentifier)*)?$"
+    if ($Version -notmatch $semverPattern) {
+        throw "Version must be a canonical semantic version, optionally with a prerelease suffix (for example, 2.1.1-alpha.1)."
     }
     if (-not [string]::Equals($Version, $ExpectedReleaseVersion, [System.StringComparison]::Ordinal)) {
         throw "This release definition is locked to v$ExpectedReleaseVersion; requested v$Version."
@@ -616,7 +623,7 @@ try {
     $requiredFiles = @(
         "LICENSE",
         "README.md",
-        "RELEASE_NOTES_v2.1.0.md",
+        "RELEASE_NOTES_v2.1.1-alpha.1.md",
         "SECURITY.md",
         "THIRD_PARTY_NOTICES.md",
         "windows\Install-CS-Scout.cmd",
@@ -628,6 +635,7 @@ try {
         "server\api_client.py",
         "server\combat.py",
         "server\config.py",
+        "server\fivee_monitor.py",
         "server\maps.py",
         "server\parse.py",
         "server\pipeline.py",

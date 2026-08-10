@@ -15,6 +15,18 @@ def configured_analysis_secret(monkeypatch):
     monkeypatch.setattr(web_server.config, "SECRET_KEY", "test-secret")
     monkeypatch.setattr(web_server.config, "LOCAL_MODE", False)
     monkeypatch.setattr(web_server.config, "HOST", "127.0.0.1")
+    with web_server.state_lock:
+        previous_pwa_token = web_server._pwa_analysis_token
+        previous_cancel_event = web_server._analysis_cancel_event
+        previous_cancel_id = web_server._analysis_cancel_id
+        web_server._pwa_analysis_token = None
+        web_server._analysis_cancel_event = None
+        web_server._analysis_cancel_id = None
+    yield
+    with web_server.state_lock:
+        web_server._pwa_analysis_token = previous_pwa_token
+        web_server._analysis_cancel_event = previous_cancel_event
+        web_server._analysis_cancel_id = previous_cancel_id
 
 
 @pytest.fixture
@@ -24,6 +36,7 @@ def isolated_web_state():
         web_server.state.clear()
         web_server.state.update({
             "status": "idle",
+            "platform": "fivee",
             "message": "",
             "progress": [],
             "results": [],
@@ -32,6 +45,7 @@ def isolated_web_state():
             "max_demos": 10,
             "map": "",
             "mode": "normal",
+            "analysis_id": None,
         })
     try:
         yield
@@ -46,6 +60,104 @@ def test_status_shape():
     assert r.status_code == 200
     assert "status" in r.get_json()
     assert r.headers["Cache-Control"] == "no-store"
+
+
+def test_cancel_running_analysis_sets_cooperative_event(isolated_web_state):
+    cancel_event = threading.Event()
+    with web_server.state_lock:
+        web_server.state.update({
+            "status": "running",
+            "platform": "fivee",
+            "message": "working",
+            "analysis_id": 41,
+        })
+        web_server._analysis_cancel_event = cancel_event
+        web_server._analysis_cancel_id = 41
+
+    response = web_server.app.test_client().post(
+        "/api/cancel",
+        json={},
+        headers={"Authorization": f"Bearer {web_server.config.SECRET_KEY}"},
+    )
+
+    assert response.status_code == 202
+    assert response.get_json() == {"status": "cancelling", "platform": "fivee"}
+    assert response.headers["Cache-Control"] == "no-store"
+    assert cancel_event.is_set()
+    with web_server.state_lock:
+        assert web_server.state["status"] == "cancelling"
+        assert web_server.state["message"] == "正在取消分析…"
+
+
+def test_cancel_requires_auth_and_rejects_when_idle(isolated_web_state):
+    client = web_server.app.test_client()
+    unauthorized = client.post("/api/cancel", json={})
+    assert unauthorized.status_code == 401
+
+    idle = client.post(
+        "/api/cancel",
+        json={},
+        headers={"Authorization": f"Bearer {web_server.config.SECRET_KEY}"},
+    )
+    assert idle.status_code == 409
+    assert idle.get_json()["error"] == "No analysis is running"
+
+
+def test_background_runner_publishes_cancelled_state(monkeypatch, isolated_web_state):
+    cancel_event = threading.Event()
+    cancel_event.set()
+
+    def cancelled_runner(usernames, map_name, **options):
+        assert options["cancel_event"] is cancel_event
+        raise web_server.pipeline.AnalysisCancelled("cancelled")
+
+    monkeypatch.setattr(web_server.pipeline, "run", cancelled_runner)
+    with web_server.state_lock:
+        web_server.state.update({
+            "status": "cancelling",
+            "platform": "fivee",
+            "analysis_id": 42,
+        })
+        web_server._analysis_cancel_event = cancel_event
+        web_server._analysis_cancel_id = 42
+
+    completed, message = web_server._run_analysis(
+        ["Alpha"], "de_mirage", cancel_event=cancel_event, analysis_id=42
+    )
+
+    assert completed is False
+    assert message == "分析已取消，可重新开始"
+    with web_server.state_lock:
+        assert web_server.state["status"] == "cancelled"
+        assert web_server._analysis_cancel_event is None
+        assert web_server._analysis_cancel_id is None
+
+
+def test_unified_cancel_routes_to_perfectworld_service(
+    monkeypatch, isolated_web_state
+):
+    monkeypatch.setattr(web_server.config, "LOCAL_MODE", True)
+
+    class FakeService:
+        def __init__(self):
+            self.calls = 0
+
+        def cancel_analysis(self):
+            self.calls += 1
+            return {"accepted": True, "phase": "cancelling"}
+
+    service = FakeService()
+    monkeypatch.setattr(web_server, "_pwa_service", service)
+    with web_server.state_lock:
+        web_server._pwa_analysis_token = 91
+
+    response = web_server.app.test_client().post("/api/cancel", json={})
+
+    assert response.status_code == 202
+    assert response.get_json() == {
+        "status": "cancelling", "platform": "perfectworld"
+    }
+    assert service.calls == 1
 
 
 def test_public_routes_do_not_require_access_key(monkeypatch, tmp_path):
@@ -303,13 +415,29 @@ def test_index_places_platform_switch_above_shared_map_controls(monkeypatch):
     assert '<span class="platform-caption">平台</span>' in html
     assert 'id="platform-5e"' in html
     assert 'id="platform-perfectworld"' in html
+    assert 'id="scout-auto"' in html
+    assert 'id="scout-manual"' in html
+    assert 'data-scout-mode="auto" class="active" aria-pressed="true"' in html
+    assert html.index('id="platform-5e"') < html.index('id="scout-auto"')
+    assert html.index('id="scout-auto"') < html.index('id="map"')
+    assert 'id="pwa-component"' in html
+    assert 'id="pwa-select-directory"' in html
     assert 'data-platform="5e" class="active" aria-pressed="true"' in html
     assert html.index('id="platform-5e"') < html.index('id="map"')
     assert 'id="player-input-label"' in html
     assert 'id="platform-player-list"' in html
     assert 'id="platform-actions"' in html
     assert 'data-five-e-only' in html
-    assert 'id="pwa-hint"' in html
+    assert 'id="pwa-hint"' not in html
+    assert '<label id="player-input-label" for="u0">对手</label>' in html
+    assert '<button id="run" type="button">开始分析</button>' in html
+    assert '<strong id="empty-title">等待分析</strong>' in html
+    assert 'id="empty-description"' not in html
+    assert 'class="sidebar-scroll"' in html
+    assert 'id="progress-panel"' in html
+    assert 'id="progress-track"' in html
+    assert 'id="progress-fill"' in html
+    assert 'id="failure-details"' in html
 
 
 def test_hosted_index_hides_desktop_only_perfectworld_switch(monkeypatch):
@@ -320,14 +448,162 @@ def test_hosted_index_hides_desktop_only_perfectworld_switch(monkeypatch):
     assert 'id="platform-perfectworld"' not in html
 
 
-def test_perfectworld_routes_are_disabled_outside_local_mode(monkeypatch):
+def test_desktop_platform_routes_are_disabled_outside_local_mode(monkeypatch):
     monkeypatch.setattr(web_server.config, "LOCAL_MODE", False)
 
     assert web_server.app.test_client().get("/api/pwa/status").status_code == 404
+    assert web_server.app.test_client().get("/api/5e/status").status_code == 404
+    assert web_server.app.test_client().post(
+        "/api/pwa/manual/analyze", json={}
+    ).status_code == 404
+
+
+def test_manual_pwa_analysis_starts_shared_cancellable_job(
+    monkeypatch, isolated_web_state
+):
+    monkeypatch.setattr(web_server.config, "LOCAL_MODE", True)
+    monkeypatch.setattr(web_server.maps, "available_maps", lambda: ["de_mirage"])
+
+    class FakeService:
+        def snapshot(self):
+            return {"signer": {"ready": True}}
+
+    started = []
+
+    class FakeThread:
+        def __init__(self, *, target, args, daemon):
+            started.append((target, args, daemon))
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(web_server, "_pwa_service", FakeService())
+    monkeypatch.setattr(web_server.threading, "Thread", FakeThread)
+
+    response = web_server.app.test_client().post(
+        "/api/pwa/manual/analyze",
+        json={
+            "usernames": ["Alpha", "Bravo"],
+            "map": "de_mirage",
+            "max_demos": 4,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"status": "started", "count": 2}
+    assert started[0][0] is web_server._run_pwa_manual_analysis
+    assert started[0][1][:3] == (["Alpha", "Bravo"], "de_mirage", 4)
+    with web_server.state_lock:
+        assert web_server.state["status"] == "running"
+        assert web_server.state["platform"] == "perfectworld"
+        assert web_server.state["total_players"] == 2
+        assert web_server._analysis_cancel_event is started[0][1][3]
+
+
+def test_manual_pwa_analysis_requires_ready_component(
+    monkeypatch, isolated_web_state
+):
+    monkeypatch.setattr(web_server.config, "LOCAL_MODE", True)
+    monkeypatch.setattr(web_server.maps, "available_maps", lambda: ["de_mirage"])
+
+    class FakeService:
+        def snapshot(self):
+            return {"signer": {"ready": False}}
+
+    monkeypatch.setattr(web_server, "_pwa_service", FakeService())
+    response = web_server.app.test_client().post(
+        "/api/pwa/manual/analyze",
+        json={"usernames": ["Alpha"], "map": "de_mirage", "max_demos": 2},
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["error"] == "Perfect World component is not ready"
+
+
+def test_pwa_status_includes_manual_analysis_results(
+    monkeypatch, isolated_web_state
+):
+    monkeypatch.setattr(web_server.config, "LOCAL_MODE", True)
+
+    class FakeService:
+        def snapshot(self):
+            return {
+                "platform": "perfectworld",
+                "phase": "waiting",
+                "signer": {"ready": True},
+            }
+
+    monkeypatch.setattr(web_server, "_pwa_service", FakeService())
+    with web_server.state_lock:
+        web_server.state.update({
+            "status": "done",
+            "platform": "perfectworld",
+            "message": "done",
+            "results": [{"username": "Alpha", "domain": "pwa_76561198000000001"}],
+            "failed": [],
+        })
+
+    body = web_server.app.test_client().get("/api/pwa/status").get_json()
+
+    assert body["analysis"]["status"] == "done"
+    assert body["analysis"]["results"][0]["username"] == "Alpha"
+
+
+def test_manual_pwa_runner_publishes_results_and_can_run_again(
+    monkeypatch, isolated_web_state
+):
+    monkeypatch.setattr(
+        web_server,
+        "_execute_pwa_manual_analysis",
+        lambda usernames, map_name, max_demos, **options: {
+            "results": [{"username": usernames[0], "domain": "pwa_76561198000000001"}],
+            "failed": [],
+        },
+    )
+    cancel_event = threading.Event()
+    with web_server.state_lock:
+        web_server.state.update({
+            "status": "running",
+            "platform": "perfectworld",
+            "analysis_id": 73,
+        })
+        web_server._analysis_cancel_event = cancel_event
+        web_server._analysis_cancel_id = 73
+
+    assert web_server._run_pwa_manual_analysis(
+        ["Alpha"], "de_mirage", 2, cancel_event, 73
+    ) is True
+
+    with web_server.state_lock:
+        assert web_server.state["status"] == "done"
+        assert web_server.state["results"][0]["username"] == "Alpha"
+        assert web_server._analysis_cancel_event is None
+
+
+def test_manual_pwa_identity_failure_does_not_discard_other_players(monkeypatch):
+    def resolve(username):
+        if username == "Missing":
+            raise LookupError("not found")
+        return {
+            "username": username,
+            "steamid": "76561198000000001",
+            "domain": "alpha-domain",
+        }
+
+    monkeypatch.setattr(web_server.api_client, "resolve_player_identity", resolve)
+    players, failed = web_server._resolve_pwa_manual_players(
+        ["Alpha", "Missing"], SimpleNamespace(current_match=None)
+    )
+
+    assert [player.nickname for player in players] == ["Alpha"]
+    assert failed == [{
+        "username": "Missing",
+        "reason": "未找到玩家或无法解析 SteamID",
+    }]
 
 
 def test_perfectworld_routes_share_the_main_app_and_stay_loopback_only(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, isolated_web_state
 ):
     monkeypatch.setattr(web_server.config, "LOCAL_MODE", True)
     monkeypatch.setattr(web_server.config, "HOST", "127.0.0.1")
@@ -343,6 +619,7 @@ def test_perfectworld_routes_share_the_main_app_and_stay_loopback_only(
         def __init__(self):
             self.started = 0
             self.max_demos = 6
+            self.directory_selections = 0
 
         def start(self):
             self.started += 1
@@ -360,6 +637,20 @@ def test_perfectworld_routes_share_the_main_app_and_stay_loopback_only(
         def request_analysis(self):
             return {"accepted": True, "phase": "queued"}
 
+        def choose_install_directory(self):
+            self.directory_selections += 1
+            return {
+                "selected": True,
+                "cancelled": False,
+                "signer": {
+                    "ready": True,
+                    "code": "ready",
+                    "message": "完美平台组件已就绪",
+                    "path": "C:/Perfect/plugin/PvpAlive.dll",
+                    "source": "selected",
+                },
+            }
+
     service = FakeService()
     monkeypatch.setattr(web_server, "_pwa_service", service)
     monkeypatch.setattr(web_server, "_pwa_output_dir", str(output_dir))
@@ -375,9 +666,27 @@ def test_perfectworld_routes_share_the_main_app_and_stay_loopback_only(
     assert status.get_json()["platform"] == "perfectworld"
     assert status.headers["Cache-Control"] == "no-store"
 
+    assert client.post("/api/pwa/dll/select").status_code == 403
+    selected = client.post(
+        "/api/pwa/dll/select", headers={"X-CS-Scout-Request": "1"}
+    )
+    assert selected.status_code == 200
+    assert selected.get_json()["signer"]["code"] == "ready"
+    assert service.directory_selections == 1
+    assert selected.headers["Cache-Control"] == "no-store"
+
+    with web_server.state_lock:
+        web_server.state.update({
+            "status": "done",
+            "platform": "perfectworld",
+            "results": [{"username": "Old manual result"}],
+        })
     analyze = client.post("/api/pwa/analyze")
     assert analyze.status_code == 200
     assert analyze.get_json() == {"accepted": True, "phase": "queued"}
+    with web_server.state_lock:
+        assert web_server.state["status"] == "idle"
+        assert web_server.state["results"] == []
 
     player = client.get(f"/api/pwa/player/{domain}")
     assert player.status_code == 200
@@ -388,6 +697,194 @@ def test_perfectworld_routes_share_the_main_app_and_stay_loopback_only(
         "/api/pwa/status", environ_base={"REMOTE_ADDR": "203.0.113.10"}
     )
     assert remote.status_code == 404
+
+
+def test_fivee_routes_detect_confirm_and_start_shared_pipeline(
+    monkeypatch, isolated_web_state
+):
+    monkeypatch.setattr(web_server.config, "LOCAL_MODE", True)
+    monkeypatch.setattr(web_server.config, "HOST", "127.0.0.1")
+    monkeypatch.setattr(web_server.maps, "available_maps", lambda: ["de_mirage"])
+    launched = []
+
+    class CapturedThread:
+        def __init__(self, target, args=(), daemon=None):
+            self.target = target
+            self.args = args
+
+        def start(self):
+            launched.append((self.target, self.args))
+
+    class FakeService:
+        def __init__(self):
+            self.started = 0
+            self.phase = "awaiting_confirmation"
+            self.analysis_started = 0
+
+        def start(self):
+            self.started += 1
+
+        def configure(self, *, max_demos, mode):
+            return {"max_demos": max_demos, "mode": mode, "busy": False}
+
+        def snapshot(self):
+            return {
+                "platform": "fivee",
+                "phase": self.phase,
+                "message": "ready",
+                "analysis_id": getattr(self, "analysis_id", None),
+                "targets": [{"username": f"Opponent {index}"} for index in range(5)],
+            }
+
+        def select_own_team(self, team):
+            self.phase = "awaiting_confirmation"
+            return {"accepted": team == "t1", "phase": self.phase}
+
+        def analysis_payload(self, *, map_override=""):
+            targets = [{
+                "username": f"Opponent {index}",
+                "domain": f"opponent-{index}",
+                "steamid": f"7656119800000{index:04d}",
+            } for index in range(5)]
+            return {
+                "usernames": [target["username"] for target in targets],
+                "player_hints": targets,
+                "map": map_override or "de_mirage",
+                "max_demos": 4,
+                "mode": "fast",
+            }
+
+        def mark_analysis_started(self, analysis_id=None):
+            self.analysis_started += 1
+            self.analysis_id = analysis_id
+            self.phase = "analyzing"
+
+        def mark_analysis_start_failed(self):
+            self.phase = "awaiting_confirmation"
+
+    service = FakeService()
+    monkeypatch.setattr(web_server, "_fivee_service", service)
+    monkeypatch.setattr(web_server, "threading", SimpleNamespace(Thread=CapturedThread))
+    client = web_server.app.test_client()
+
+    configured = client.post("/api/5e/config", json={
+        "max_demos": 4, "mode": "fast",
+    })
+    assert configured.status_code == 200
+    assert configured.get_json() == {"max_demos": 4, "mode": "fast", "busy": False}
+
+    status = client.get("/api/5e/status")
+    assert status.status_code == 200
+    assert status.get_json()["platform"] == "fivee"
+    assert status.headers["Cache-Control"] == "no-store"
+
+    selected = client.post("/api/5e/team", json={"team": "t1"})
+    assert selected.status_code == 200
+
+    analyze = client.post("/api/5e/analyze", json={"map": "de_mirage"})
+    assert analyze.status_code == 200
+    assert analyze.get_json() == {"status": "started", "count": 5, "mode": "fast"}
+    assert service.analysis_started == 1
+    assert len(launched) == 1
+    assert launched[0][0] is web_server._run_fivee_analysis
+    assert launched[0][1][4][0]["domain"] == "opponent-0"
+    with web_server.state_lock:
+        assert web_server.state["status"] == "running"
+        assert web_server.state["map"] == "de_mirage"
+
+    remote = client.get(
+        "/api/5e/status", environ_base={"REMOTE_ADDR": "203.0.113.10"}
+    )
+    assert remote.status_code == 404
+
+
+def test_fivee_status_is_read_only_and_merges_same_run_results(
+    monkeypatch, isolated_web_state
+):
+    monkeypatch.setattr(web_server.config, "LOCAL_MODE", True)
+
+    class FakeService:
+        def __init__(self):
+            self.started = 0
+
+        def start(self):
+            self.started += 1
+
+        def snapshot(self):
+            return {
+                "platform": "fivee", "phase": "ready", "message": "ready",
+                "analysis_id": 12, "targets": [], "team_options": [],
+            }
+
+    service = FakeService()
+    monkeypatch.setattr(web_server, "_fivee_service", service)
+    with web_server.state_lock:
+        web_server.state.update({
+            "status": "done", "platform": "fivee", "analysis_id": 12,
+            "message": "done", "results": [{"domain": "exact-domain"}],
+            "failed": [], "progress": [],
+        })
+
+    body = web_server.app.test_client().get("/api/5e/status").get_json()
+
+    assert service.started == 0
+    assert body["analysis"]["status"] == "done"
+    assert body["analysis"]["results"] == [{"domain": "exact-domain"}]
+
+
+def test_fivee_status_keeps_completed_manual_results_without_service_run_id(
+    monkeypatch, isolated_web_state
+):
+    monkeypatch.setattr(web_server.config, "LOCAL_MODE", True)
+
+    class FakeService:
+        def snapshot(self):
+            return {
+                "platform": "fivee", "phase": "waiting", "message": "waiting",
+                "analysis_id": None, "targets": [], "team_options": [],
+            }
+
+    monkeypatch.setattr(web_server, "_fivee_service", FakeService())
+    with web_server.state_lock:
+        web_server.state.update({
+            "status": "done", "platform": "fivee", "analysis_id": 99,
+            "message": "done", "results": [
+                {"domain": "first"}, {"domain": "last-finished"}
+            ],
+            "failed": [], "progress": [],
+        })
+
+    body = web_server.app.test_client().get("/api/5e/status").get_json()
+
+    assert [item["domain"] for item in body["analysis"]["results"]] == [
+        "first", "last-finished",
+    ]
+
+
+def test_perfectworld_and_fivee_analysis_are_mutually_exclusive(
+    monkeypatch, isolated_web_state
+):
+    monkeypatch.setattr(web_server.config, "LOCAL_MODE", True)
+    monkeypatch.setattr(web_server.maps, "available_maps", lambda: ["de_mirage"])
+
+    class FakePwaService:
+        def request_analysis(self):
+            raise AssertionError("busy coordinator should reject before queueing")
+
+    monkeypatch.setattr(web_server, "_pwa_service", FakePwaService())
+    with web_server.state_lock:
+        web_server.state["status"] = "running"
+
+    client = web_server.app.test_client()
+    assert client.post("/api/pwa/analyze").status_code == 409
+
+    with web_server.state_lock:
+        web_server.state["status"] = "idle"
+        web_server._pwa_analysis_token = 99
+    response = client.post("/api/analyze", json={
+        "usernames": ["Alpha"], "map": "de_mirage", "max_demos": 1,
+    })
+    assert response.status_code == 409
 
 
 def test_frontend_registers_button_switched_replay_views():
@@ -407,6 +904,9 @@ def test_frontend_registers_button_switched_replay_views():
     assert 'requestJSON(`/api/pwa/player/${encodeURIComponent(domain)}`' in source
     assert 'requestJSON("/api/pwa/config"' in source
     assert 'requestJSON("/api/pwa/analyze"' in source
+    assert 'requestJSON("/api/pwa/dll/select"' in source
+    assert 'automaticMode && pwaSignerReady &&' in source
+    assert 'requestJSON("/api/pwa/manual/analyze"' in source
     assert 'else if (publicMonitoringEnabled) schedulePoll(epoch, 5000)' in source
     assert 'void poll(pollEpoch)' in source
 
@@ -553,6 +1053,8 @@ def test_run_analysis_dispatches_fast_pipeline(monkeypatch):
 
     def fake_fast(usernames, map_name, max_demos, progress_cb, result_cb):
         called.append((usernames, map_name, max_demos))
+        progress_cb(0, 1, "Alpha input", 2, "解析 Steam ID...")
+        progress_cb(0, 1, "Alpha", 4, "解析 demo 1/2...")
         return [], []
 
     monkeypatch.setattr(web_server.pipeline, "run_fast", fake_fast)
@@ -565,6 +1067,14 @@ def test_run_analysis_dispatches_fast_pipeline(monkeypatch):
         with web_server.state_lock:
             assert web_server.state["status"] == "done"
             assert web_server.state["message"].startswith("快速分析完成")
+            progress = web_server.state["progress"]
+            assert len(progress) == 1
+            assert progress[0]["id"] == "Alpha"
+            assert progress[0]["step"] == 4
+            assert progress[0]["msg"] == "解析 demo 1/2..."
+            assert progress[0]["index"] == 0
+            assert progress[0]["total"] == 1
+            assert isinstance(progress[0]["updated_at"], float)
     finally:
         with web_server.state_lock:
             web_server.state.clear()
