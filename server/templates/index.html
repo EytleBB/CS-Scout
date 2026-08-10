@@ -420,14 +420,13 @@
   }
   .progress-panel[data-state="error"] #progress-fill { background: var(--danger); }
   #status {
-    min-height: 17px;
+    min-height: 32px;
     margin-top: 8px;
-    overflow: hidden;
     color: var(--text-color-secondary);
     font-size: 11px;
     line-height: 1.45;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
+    white-space: normal;
   }
   #failure-details {
     margin-top: 7px;
@@ -713,6 +712,10 @@
      <div id="pwa-component" class="pwa-component" hidden>
       <span id="pwa-component-status">正在检测组件…</span>
       <button id="pwa-select-directory" type="button">选择目录</button>
+     </div>
+     <div id="fivee-component" class="pwa-component" hidden>
+      <span id="fivee-component-status">未找到 5E 客户端</span>
+      <button id="fivee-select-executable" type="button">选择 5E</button>
      </div>
      {% endif %}
     </div>

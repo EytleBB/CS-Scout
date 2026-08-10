@@ -29,6 +29,8 @@ let pwaSignerMessage = "正在检测组件…";
 let fiveECanAnalyze = false;
 let fiveEManualFallback = false;
 let fiveENeedsMap = false;
+let fiveENeedsExecutable = false;
+let fiveEExecutableMessage = "未找到 5E 客户端";
 let fiveEUseAnalysisStatus = false;
 let manualUsernames = {
   "5e": ["", "", "", "", ""],
@@ -146,6 +148,8 @@ function setAnalysisBusy(busy, options = {}) {
   }
   const pwaDirectoryButton = $("#pwa-select-directory");
   if (pwaDirectoryButton) pwaDirectoryButton.disabled = disabled;
+  const fiveEExecutableButton = $("#fivee-select-executable");
+  if (fiveEExecutableButton) fiveEExecutableButton.disabled = disabled;
   const depth = $("#depth");
   if (depth) depth.disabled = disabled;
 }
@@ -177,6 +181,16 @@ function updatePlatformControls() {
     pwaDirectoryButton.hidden = pwaSignerReady;
     pwaDirectoryButton.disabled = analysisBusy;
   }
+  const fiveEComponent = $("#fivee-component");
+  const fiveEComponentStatus = $("#fivee-component-status");
+  const fiveEExecutableButton = $("#fivee-select-executable");
+  if (fiveEComponent) {
+    fiveEComponent.hidden = !automaticFiveE || !fiveENeedsExecutable;
+  }
+  if (fiveEComponentStatus) {
+    fiveEComponentStatus.textContent = fiveEExecutableMessage;
+  }
+  if (fiveEExecutableButton) fiveEExecutableButton.disabled = analysisBusy;
   const mapSelect = $("#map");
   if (mapSelect) {
     mapSelect.disabled = availableMapNames.length === 0 ||
@@ -204,6 +218,11 @@ function updatePlatformControls() {
 
 function shortPlatformStatus(status) {
   const phase = String(status && status.phase || "");
+  const message = String(status && status.message || "");
+  if (status && status.platform === "fivee" &&
+      ["connecting", "manual"].includes(phase) && message) {
+    return message;
+  }
   const labels = {
     connecting: "正在连接…",
     waiting: "等待对局",
@@ -216,7 +235,7 @@ function shortPlatformStatus(status) {
     ready: "分析完成",
     manual: "输入对手用户名",
   };
-  return labels[phase] || String(status && status.message || "");
+  return labels[phase] || message;
 }
 
 function showAutomaticTargets(targets) {
@@ -283,6 +302,37 @@ async function selectPerfectWorldDirectory() {
     if (!result.cancelled) setStatus(pwaSignerMessage);
   } catch (error) {
     setStatus(`目录选择失败：${error.message}`);
+  } finally {
+    if (button) button.disabled = analysisBusy;
+    await poll(pollEpoch);
+  }
+}
+
+async function selectFiveEExecutable() {
+  if (analysisBusy) return;
+  const button = $("#fivee-select-executable");
+  if (button) button.disabled = true;
+  setStatus("请选择 5EClient.exe…");
+  try {
+    const result = await requestJSON("/api/5e/exe/select", {
+      method: "POST",
+      headers: { "X-CS-Scout-Request": "1" }
+    });
+    const executable = result && result.executable &&
+      typeof result.executable === "object" ? result.executable : null;
+    if (executable) {
+      fiveENeedsExecutable = !Boolean(executable.ready || executable.found);
+      fiveEExecutableMessage = String(
+        executable.message || "未找到 5E 客户端"
+      );
+    }
+    updatePlatformControls();
+    if (!result.cancelled) setStatus(fiveEExecutableMessage);
+  } catch (error) {
+    fiveENeedsExecutable = true;
+    fiveEExecutableMessage = `选择失败：${error.message}`;
+    updatePlatformControls();
+    setStatus(fiveEExecutableMessage);
   } finally {
     if (button) button.disabled = analysisBusy;
     await poll(pollEpoch);
@@ -570,6 +620,7 @@ function wireControls() {
   const platformButtons = document.querySelectorAll("[data-platform]");
   const scoutModeButtons = document.querySelectorAll("[data-scout-mode]");
   const pwaDirectoryButton = $("#pwa-select-directory");
+  const fiveEExecutableButton = $("#fivee-select-executable");
   if (playPause) {
     playPause.addEventListener("click", () => {
       clock.playing = !clock.playing;
@@ -605,6 +656,11 @@ function wireControls() {
   if (pwaDirectoryButton) {
     pwaDirectoryButton.addEventListener("click", () => {
       void selectPerfectWorldDirectory();
+    });
+  }
+  if (fiveEExecutableButton) {
+    fiveEExecutableButton.addEventListener("click", () => {
+      void selectFiveEExecutable();
     });
   }
   setPlaybackSpeed(clock.speed);
@@ -1216,6 +1272,8 @@ async function poll(epoch = pollEpoch) {
       }
     } else if (localFiveE) {
       fiveEManualFallback = automaticMode && Boolean(status.manual_fallback);
+      fiveENeedsExecutable = automaticMode && Boolean(status.needs_executable);
+      fiveEExecutableMessage = String(status.message || "未找到 5E 客户端");
       fiveENeedsMap = automaticMode && Boolean(status.needs_map);
       fiveECanAnalyze = automaticMode &&
         status.phase === "awaiting_confirmation";
@@ -1341,7 +1399,7 @@ if (typeof module !== "undefined") {
     runAnalysis, cancelAnalysis,
     connectWithEnteredKey, setPlatform, setScoutMode, updatePlatformControls,
     showPerfectWorldTargets, showAutomaticTargets, runPerfectWorldAnalysis,
-    selectPerfectWorldDirectory,
+    selectPerfectWorldDirectory, selectFiveEExecutable,
     runFiveEAutomaticAnalysis, renderFiveETeamOptions,
     progressForStep, progressFromMessage, renderAnalysisProgress,
   };

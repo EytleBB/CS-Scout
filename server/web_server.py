@@ -54,7 +54,8 @@ CACHE_CONTROL_PATHS = frozenset({
     "/api/pwa/status", "/api/pwa/config", "/api/pwa/analyze",
     "/api/pwa/manual/analyze",
     "/api/pwa/dll/select",
-    "/api/5e/status", "/api/5e/config", "/api/5e/team", "/api/5e/analyze",
+    "/api/5e/status", "/api/5e/config", "/api/5e/exe/select",
+    "/api/5e/team", "/api/5e/analyze",
 })
 CACHE_CONTROL_PREFIXES = ("/api/player/", "/api/pwa/player/", "/output/")
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
@@ -496,6 +497,24 @@ def api_fivee_status():
                 "failed": list(state.get("failed", [])),
             }
     return jsonify(snapshot)
+
+
+@app.route("/api/5e/exe/select", methods=["POST"])
+def api_fivee_select_executable():
+    if not _pwa_request_is_local():
+        abort(404)
+    if request.headers.get("X-CS-Scout-Request") != "1":
+        return jsonify({"error": "Missing local request marker"}), 403
+    with state_lock:
+        busy, _owner_platform = _analysis_activity_locked()
+    if busy:
+        return jsonify({"error": "Analysis already running"}), 409
+    service = _get_fivee_service(start=False)
+    selected = service.choose_executable()
+    service.start()
+    if not selected.get("cancelled") and not selected.get("selected"):
+        return jsonify(selected), 409
+    return jsonify(selected)
 
 
 @app.route("/api/5e/team", methods=["POST"])

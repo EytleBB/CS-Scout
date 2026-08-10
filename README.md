@@ -10,8 +10,8 @@ Canvas 将多个回合叠加为同步回放，不在服务器端渲染热力图�
 ## Windows 玩家下载版
 
 普通玩家不需要部署服务器。请从
-[v2.1.1-alpha.1 预发行页面](https://github.com/EytleBB/CS-Scout/releases/tag/v2.1.1-alpha.1) 下载
-`CS-Scout-Windows-x64-v2.1.1-alpha.1.zip`，完整解压后依次双击：
+[v2.1.1-alpha.2 预发行页面](https://github.com/EytleBB/CS-Scout/releases/tag/v2.1.1-alpha.2) 下载
+`CS-Scout-Windows-x64-v2.1.1-alpha.2.zip`，完整解压后依次双击：
 
 1. `windows\Install-CS-Scout.cmd`：创建独立 Python 环境并安装固定版本依赖；
 2. `windows\Start-CS-Scout.cmd`：启动仅本机可访问的服务并打开浏览器，无需输入密钥。

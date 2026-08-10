@@ -308,6 +308,106 @@ def test_unknown_process_state_does_not_claim_fivee_is_stopped(monkeypatch):
     assert fivee_monitor.is_5e_running() is None
 
 
+def test_custom_executable_is_validated_saved_and_discovered(monkeypatch, tmp_path):
+    executable = tmp_path / "Custom 5E" / "5EClient.exe"
+    executable.parent.mkdir()
+    executable.write_bytes(b"signed test executable")
+    config_path = tmp_path / "data" / "fivee-install.json"
+    monkeypatch.setenv("CS_SCOUT_5E_CONFIG", str(config_path))
+    monkeypatch.setattr(fivee_monitor, "_official_5e_signature", lambda _path: True)
+
+    configured = fivee_monitor.configure_5e_executable(executable)
+    located = fivee_monitor.locate_5e_executable()
+
+    assert configured["ready"] is True
+    assert json.loads(config_path.read_text(encoding="utf-8"))["executable"] == str(
+        executable.resolve()
+    )
+    assert located["found"] is True
+    assert located["source"] == "saved"
+    assert located["path"] == str(executable.resolve())
+
+
+def test_custom_executable_rejects_wrong_file_or_signature(monkeypatch, tmp_path):
+    wrong_name = tmp_path / "client.exe"
+    wrong_name.write_bytes(b"not 5e")
+    assert fivee_monitor.configure_5e_executable(wrong_name)["code"] == "wrong_file"
+
+    executable = tmp_path / "5EClient.exe"
+    executable.write_bytes(b"not signed")
+    monkeypatch.setattr(fivee_monitor, "_official_5e_signature", lambda _path: False)
+    assert fivee_monitor.configure_5e_executable(executable)["code"] == "invalid_signature"
+
+
+def test_supervisor_launches_discovered_non_default_client(monkeypatch):
+    launched = []
+    service = fivee_monitor.FiveEAutoScoutService(
+        auto_launch=True, cdp_port=9222, websocket_module=object()
+    )
+    monkeypatch.setattr(service, "_cdp_targets", lambda: [])
+    monkeypatch.setattr(fivee_monitor, "is_5e_running", lambda: False)
+    monkeypatch.setattr(fivee_monitor, "locate_5e_executable", lambda: {
+        "found": True,
+        "path": r"D:\\Games\\5E\\5EClient.exe",
+        "source": "saved",
+        "message": "ready",
+    })
+    monkeypatch.setattr(fivee_monitor, "_loopback_port_in_use", lambda _port: False)
+    monkeypatch.setattr(
+        fivee_monitor, "launch_5e_with_cdp",
+        lambda executable, port: launched.append((executable, port)),
+    )
+
+    service._supervisor_iteration()
+
+    assert launched == [(r"D:\\Games\\5E\\5EClient.exe", 9222)]
+    snapshot = service.snapshot()
+    assert snapshot["phase"] == "connecting"
+    assert snapshot["connection_code"] == "launching"
+    assert snapshot["executable_found"] is True
+
+
+def test_supervisor_chooses_free_port_when_default_is_occupied(monkeypatch):
+    launched = []
+    service = fivee_monitor.FiveEAutoScoutService(
+        auto_launch=True, cdp_port=9222, websocket_module=object()
+    )
+    monkeypatch.setattr(service, "_cdp_targets", lambda: [])
+    monkeypatch.setattr(fivee_monitor, "is_5e_running", lambda: False)
+    monkeypatch.setattr(fivee_monitor, "locate_5e_executable", lambda: {
+        "found": True, "path": r"E:\\5E\\5EClient.exe", "source": "saved",
+        "message": "ready",
+    })
+    monkeypatch.setattr(fivee_monitor, "_loopback_port_in_use", lambda _port: True)
+    monkeypatch.setattr(fivee_monitor, "cdp_listener_is_5e", lambda _port: False)
+    monkeypatch.setattr(fivee_monitor, "_free_loopback_port", lambda: 19333)
+    monkeypatch.setattr(
+        fivee_monitor, "launch_5e_with_cdp",
+        lambda executable, port: launched.append((executable, port)),
+    )
+
+    service._supervisor_iteration()
+
+    assert launched == [(r"E:\\5E\\5EClient.exe", 19333)]
+    assert service.snapshot()["cdp_port"] == 19333
+
+
+def test_running_client_without_cdp_stops_connecting_forever(monkeypatch):
+    service = fivee_monitor.FiveEAutoScoutService(
+        auto_launch=True, websocket_module=object()
+    )
+    monkeypatch.setattr(service, "_cdp_targets", lambda: [])
+    monkeypatch.setattr(fivee_monitor, "is_5e_running", lambda: True)
+
+    service._supervisor_iteration()
+
+    snapshot = service.snapshot()
+    assert snapshot["phase"] == "manual"
+    assert snapshot["connection_code"] == "client_running_without_cdp"
+    assert snapshot["manual_fallback"] is True
+    assert "CDP" in snapshot["last_error"]
+
+
 @pytest.mark.parametrize("success", [False, True])
 def test_completed_analysis_keeps_confirmed_roster_for_retry(success):
     service = fivee_monitor.FiveEAutoScoutService(

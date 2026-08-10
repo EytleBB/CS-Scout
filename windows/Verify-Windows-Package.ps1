@@ -201,6 +201,8 @@ Assert-True ($runtimeRequirements -match '(?m)^websocket-client==[^;]+;\s*platfo
 Assert-True ($installScript -match 'import[^\r\n]*websocket[^\r\n]*fivee_monitor') `
     "Installer must import-check websocket and the 5E monitor."
 Assert-True ($installScript -match 'sys\.path\.insert\(0, sys\.argv\[1\]\)') `
+    "Installer must import-check packages from the packaged project root."
+Assert-True ($installScript -match 'sys\.path\.insert\(0, sys\.argv\[2\]\)') `
     "Installer must import-check the 5E monitor from the packaged server directory."
 Assert-True ($startScript -match 'CS_SCOUT_5E_CDP_PORT') `
     "Starter must pass the validated 5E CDP port to the local service."
@@ -214,6 +216,17 @@ Assert-True ($webServerScript -match '/api/pwa/dll/select') `
     "Local server must expose the Perfect World directory picker endpoint."
 Assert-True ($appScript -match '/api/pwa/dll/select') `
     "Desktop UI must call the Perfect World directory picker endpoint."
+Assert-True ($webServerScript -match '/api/5e/exe/select') `
+    "Local server must expose the 5E executable picker endpoint."
+Assert-True ($appScript -match '/api/5e/exe/select') `
+    "Desktop UI must call the 5E executable picker endpoint."
+$fiveEMonitorScript = Get-Content -LiteralPath (Join-Path $root "server\fivee_monitor.py") -Raw
+Assert-True ($fiveEMonitorScript -match 'fivee-install\.json') `
+    "5E monitor must persist a selected non-default installation path."
+Assert-True ($fiveEMonitorScript -match 'OpenFileDialog') `
+    "5E monitor must provide a graphical executable picker."
+Assert-True ($fiveEMonitorScript -match 'CurrentVersion\\Uninstall') `
+    "5E monitor must inspect Windows installation records."
 Assert-True ($nativeSignerScript -match 'Get-AuthenticodeSignature') `
     "Perfect World DLL validation must verify the Authenticode signature."
 Assert-True ($nativeSignerScript -match 'X86_PE_MACHINE') `

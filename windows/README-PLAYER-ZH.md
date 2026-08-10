@@ -18,9 +18,9 @@
 ## 二、下载和安装
 
 1. 在 GitHub Releases 页面下载
-   `CS-Scout-Windows-x64-v2.1.1-alpha.1.zip` Windows 发布包。
+   `CS-Scout-Windows-x64-v2.1.1-alpha.2.zip` Windows 发布包。
 2. 同时下载 `SHA256SUMS.txt`，在 ZIP 所在目录运行
-   `Get-FileHash -Algorithm SHA256 .\CS-Scout-Windows-x64-v2.1.1-alpha.1.zip`，确认结果与
+   `Get-FileHash -Algorithm SHA256 .\CS-Scout-Windows-x64-v2.1.1-alpha.2.zip`，确认结果与
    校验文件中的 64 位散列完全相同；不同就不要运行。
 3. 不要下载 GitHub 自动生成的 `Source code (zip)` 或 `Source code (tar.gz)`；它们可能不含雷达地图。
 4. 右键 ZIP，选择“全部解压”。不要直接在压缩包预览窗口里运行程序。
@@ -42,7 +42,8 @@
    所以不同电脑或不同启动次数显示的数字可能不同，这是正常现象。
 3. 先选择“5E / 完美平台”，再选择“自动 / 手动”。两个平台默认都是自动模式。
 4. 选择 5E 自动模式后，CS-Scout 会连接本机 5E 客户端并等待匹配消息。5E 尚未运行时，
-   CS-Scout 会尝试启动它；如果 Windows 显示 5E 的标准 UAC 确认，请确认后继续。
+   CS-Scout 会尝试启动它；如果没有自动找到安装位置，直接在页面点击“选择 5E”，选中
+   `5EClient.exe` 即可。程序会记住这次选择；如果 Windows 显示 5E 的标准 UAC 确认，请确认后继续。
 5. 匹配成功后，页面会自动显示地图和 5 名对手，用户名不可修改。确认名单后点击
    “开始分析”。如果无法唯一识别你所在的队伍，页面会让你点击一次“我的队伍”。
 6. 手动模式下可直接选择地图并输入最多 5 个用户名；5E 与完美平台都会使用各自平台的历史 Demo。
@@ -65,7 +66,8 @@
 ├─ demos\        已下载的 Demo 缓存
 ├─ output\       最近的 5E 分析 JSON
 ├─ perfectworld\ 完美平台 Demo 缓存与分析 JSON
-└─ pwa-install.json  上次选择的完美平台安装目录
+├─ pwa-install.json    上次选择的完美平台安装目录
+└─ fivee-install.json  上次选择的 5E 客户端位置
 ```
 
 需要释放磁盘时，先停止 CS-Scout，再删除 `demos` 目录中的缓存文件。不要在分析过程中删除文件。
@@ -103,12 +105,8 @@ python.org 提供的版本并保留 Python Launcher。
 保持 CS-Scout 运行并允许它重新启动 5E，或重新启动 CS-Scout。若仍不可用，直接切换到
 “手动”并输入用户名。
 
-如果 5E 安装在非默认目录，可先在 PowerShell 中指定程序路径，再从同一个窗口启动：
-
-```powershell
-$env:CS_SCOUT_5E_EXE = 'D:\Games\5EClient\5EClient.exe'
-.\windows\Start-CS-Scout.cmd
-```
+如果 5E 安装在非默认目录，页面会显示“选择 5E”。点击后选中官方 `5EClient.exe`，CS-Scout
+会验证数字签名、保存位置并自动重试；不需要打开 PowerShell，也不需要配置环境变量。
 
 CS-Scout 只连接确认由官方 5E 进程占用的 `127.0.0.1` 调试端口。本人识别只在 5E 页面内部
 用当前十人名单比对账号 UUID；页面存储、Cookie 和登录 Token 不会返回给 CS-Scout，也不会

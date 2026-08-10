@@ -9,7 +9,19 @@ import pytest
 NODE = shutil.which("node")
 REPLAY_JS = os.path.join(os.path.dirname(__file__), "..", "static", "replay.js")
 APP_JS = os.path.join(os.path.dirname(__file__), "..", "static", "app.js")
+INDEX_HTML = os.path.join(os.path.dirname(__file__), "..", "templates", "index.html")
 pytestmark = pytest.mark.skipif(NODE is None, reason="Node.js is not installed")
+
+
+def test_fivee_non_default_install_has_visible_graphical_picker():
+    with open(APP_JS, encoding="utf-8") as source:
+        app_source = source.read()
+    with open(INDEX_HTML, encoding="utf-8") as source:
+        html_source = source.read()
+
+    assert 'id="fivee-select-executable"' in html_source
+    assert "/api/5e/exe/select" in app_source
+    assert 'headers: { "X-CS-Scout-Request": "1" }' in app_source
 
 
 def test_replay_player_runtime_contract():
