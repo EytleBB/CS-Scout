@@ -99,7 +99,7 @@ function Assert-WebpFile([string]$Path, [string]$RelativePath) {
 
 function Assert-Package([string]$Root) {
     $runtimePython = @(
-        "api_client.py", "combat.py", "config.py", "maps.py",
+        "api_client.py", "combat.py", "config.py", "fivee_monitor.py", "maps.py",
         "parse.py", "pipeline.py", "player_json.py", "web_server.py"
     )
     foreach ($fileName in $runtimePython) {
@@ -389,7 +389,7 @@ try {
     Write-Step "Checking the installation"
     & $venvPython -m pip check
     Assert-LastExitCode "Checking installed dependencies"
-    & $venvPython -c "import cryptography, flask, requests, pandas, numpy, demoparser2, perfectworld_experiment.web_server; print('Runtime imports: OK')"
+    & $venvPython -c "import sys; sys.path.insert(0, sys.argv[1]); import cryptography, flask, requests, pandas, numpy, demoparser2, websocket, fivee_monitor, perfectworld_experiment.web_server; print('Runtime imports: OK')" (Join-Path $projectRoot "server")
     Assert-LastExitCode "Importing runtime packages"
 
     Write-Host "`nInstallation is ready." -ForegroundColor Green

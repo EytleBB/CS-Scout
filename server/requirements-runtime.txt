@@ -7,6 +7,7 @@ pandas==3.0.3
 # the supported Python 3.11/3.12 runtimes.
 numpy==2.4.6
 demoparser2==0.41.4
+websocket-client==1.8.0; platform_system == "Windows"
 
 # Linux production WSGI server. Local Windows development continues to use
 # server/web_server.py and therefore skips this platform-specific dependency.

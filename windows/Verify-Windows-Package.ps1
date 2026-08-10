@@ -111,7 +111,7 @@ foreach ($fileName in @("Install-CS-Scout.ps1", "Start-CS-Scout.ps1", "Verify-Wi
 }
 
 $runtimePython = @(
-    "api_client.py", "combat.py", "config.py", "maps.py",
+    "api_client.py", "combat.py", "config.py", "fivee_monitor.py", "maps.py",
     "parse.py", "pipeline.py", "player_json.py", "web_server.py"
 )
 foreach ($fileName in $runtimePython) {
@@ -173,6 +173,10 @@ $installScript = Get-Content -LiteralPath (Join-Path $windowsRoot "Install-CS-Sc
 $startScript = Get-Content -LiteralPath (Join-Path $windowsRoot "Start-CS-Scout.ps1") -Raw
 $configScript = Get-Content -LiteralPath (Join-Path $root "server\config.py") -Raw
 $webServerScript = Get-Content -LiteralPath (Join-Path $root "server\web_server.py") -Raw
+$appScript = Get-Content -LiteralPath (Join-Path $root "server\static\app.js") -Raw
+$nativeSignerScript = Get-Content -LiteralPath (Join-Path $root "perfectworld_experiment\native_signer.py") -Raw
+$pwaBridgeSource = Get-Content -LiteralPath (Join-Path $root "perfectworld_experiment\native\PwaSwapBridge.cs") -Raw
+$runtimeRequirements = Get-Content -LiteralPath (Join-Path $root "server\requirements-runtime.txt") -Raw
 
 foreach ($fileName in $runtimePython) {
     Assert-True ($installScript -match [regex]::Escape($fileName)) "Installer does not validate runtime Python file: $fileName"
@@ -192,10 +196,30 @@ foreach ($relativePath in $perfectWorldRuntime) {
 }
 Assert-True ($installScript -match 'perfectworld_experiment\\requirements\.txt') `
     "Installer must install Perfect World dependencies."
+Assert-True ($runtimeRequirements -match '(?m)^websocket-client==[^;]+;\s*platform_system\s*==\s*["'']Windows["'']') `
+    "Windows runtime must contain one pinned websocket-client dependency."
+Assert-True ($installScript -match 'import[^\r\n]*websocket[^\r\n]*fivee_monitor') `
+    "Installer must import-check websocket and the 5E monitor."
+Assert-True ($installScript -match 'sys\.path\.insert\(0, sys\.argv\[1\]\)') `
+    "Installer must import-check the 5E monitor from the packaged server directory."
+Assert-True ($startScript -match 'CS_SCOUT_5E_CDP_PORT') `
+    "Starter must pass the validated 5E CDP port to the local service."
+Assert-True ($startScript -match 'CS_SCOUT_5E_AUTO_LAUNCH') `
+    "Starter must pass the 5E auto-launch preference to the local service."
 Assert-True ($startScript -match 'CS_SCOUT_PWA_DEMO_DIR') `
     "Starter must place Perfect World Demo data outside the release directory."
 Assert-True ($startScript -match 'CS_SCOUT_PWA_OUTPUT_DIR') `
     "Starter must place Perfect World output outside the release directory."
+Assert-True ($webServerScript -match '/api/pwa/dll/select') `
+    "Local server must expose the Perfect World directory picker endpoint."
+Assert-True ($appScript -match '/api/pwa/dll/select') `
+    "Desktop UI must call the Perfect World directory picker endpoint."
+Assert-True ($nativeSignerScript -match 'Get-AuthenticodeSignature') `
+    "Perfect World DLL validation must verify the Authenticode signature."
+Assert-True ($nativeSignerScript -match 'X86_PE_MACHINE') `
+    "Perfect World DLL validation must verify the x86 PE architecture."
+Assert-True ($pwaBridgeSource -match '--probe') `
+    "Perfect World bridge must support probing the required swapData export."
 foreach ($fileName in $replayIcons) {
     Assert-True ($installScript -match [regex]::Escape($fileName)) "Installer does not validate replay icon: $fileName"
 }

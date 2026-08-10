@@ -5,8 +5,149 @@ import threading
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import pipeline
+
+
+def test_fast_analysis_cancel_stops_before_new_downloads(tmp_path, monkeypatch):
+    _install_fast_pipeline_fakes(tmp_path, monkeypatch, demos_per_player=2)
+    cancel_event = threading.Event()
+    downloads = []
+
+    def cancel_on_first_progress(*_args):
+        cancel_event.set()
+
+    monkeypatch.setattr(
+        pipeline,
+        "download_and_extract",
+        lambda *args: downloads.append(args) or [],
+    )
+
+    with pytest.raises(pipeline.AnalysisCancelled):
+        pipeline.run_fast(
+            ["Alpha", "Bravo"],
+            "de_mirage",
+            max_demos=2,
+            progress_cb=cancel_on_first_progress,
+            cancel_event=cancel_event,
+            download_workers=2,
+            parse_workers=1,
+        )
+
+    assert downloads == []
+    assert not (tmp_path / "output" / "analysis_summary.json").exists()
+
+
+def test_normal_analysis_cancel_does_not_write_partial_summary(
+    tmp_path, monkeypatch
+):
+    cancel_event = threading.Event()
+    monkeypatch.setattr(pipeline.config, "DEMO_DIR", str(tmp_path / "demos"))
+    monkeypatch.setattr(pipeline.config, "OUTPUT_DIR", str(tmp_path / "output"))
+    monkeypatch.setattr(
+        pipeline.api_client, "search_player", lambda name: ("alpha", name)
+    )
+
+    def cancel_during_discovery(domain, map_name, count):
+        cancel_event.set()
+        return []
+
+    monkeypatch.setattr(
+        pipeline.api_client, "get_demos_by_domain", cancel_during_discovery
+    )
+
+    with pytest.raises(pipeline.AnalysisCancelled):
+        pipeline.run(
+            ["Alpha"], "de_mirage", max_demos=1,
+            cancel_event=cancel_event,
+        )
+
+    assert not (tmp_path / "output" / "analysis_summary.json").exists()
+
+
+def test_cdp_identity_hint_skips_ambiguous_username_search(monkeypatch, tmp_path):
+    def unexpected_search(_username):
+        raise AssertionError("resolved CDP identity should not be searched again")
+
+    monkeypatch.setattr(pipeline.api_client, "search_player", unexpected_search)
+    monkeypatch.setattr(
+        pipeline.api_client,
+        "get_demos_by_domain",
+        lambda domain, map_name, count: [{
+            "match_code": "match-1",
+            "demo_url": "https://demo.example/match-1.zip",
+        }],
+    )
+    monkeypatch.setattr(pipeline.config, "DEMO_DIR", str(tmp_path / "demos"))
+
+    context, failure = pipeline._prepare_fast_player(
+        0,
+        "Display Name",
+        "de_mirage",
+        3,
+        lambda *_args: None,
+        {
+            "username": "Exact Name",
+            "domain": "exact-domain",
+            "steamid": "76561198000000001",
+        },
+    )
+
+    assert failure is None
+    assert context["username"] == "Exact Name"
+    assert context["domain"] == "exact-domain"
+    assert context["steamid"] == "76561198000000001"
+
+
+def test_discovery_reuses_steamid_from_gate_demo_detail(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        pipeline.api_client, "search_player", lambda name: ("alpha", name)
+    )
+    monkeypatch.setattr(
+        pipeline.api_client,
+        "get_demos_by_domain",
+        lambda domain, map_name, count: [{
+            "match_code": "match-1",
+            "demo_url": "https://demo.example/match-1.zip",
+            "steamid": "76561198000000001",
+        }],
+    )
+    monkeypatch.setattr(
+        pipeline.api_client,
+        "get_steamid_for_player",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("Steam ID detail must not be downloaded twice")
+        ),
+    )
+
+    context, failure = pipeline._prepare_fast_player(
+        0, "Alpha", "de_mirage", 1, lambda *_args: None
+    )
+
+    assert failure is None
+    assert context["steamid"] == "76561198000000001"
+
+
+def test_incomplete_automatic_identity_never_falls_back_to_username_search(monkeypatch):
+    def unexpected_search(_username):
+        raise AssertionError("incomplete automatic identity must not be searched by name")
+
+    monkeypatch.setattr(pipeline.api_client, "search_player", unexpected_search)
+
+    context, failure = pipeline._prepare_fast_player(
+        0,
+        "Duplicate Name",
+        "de_mirage",
+        3,
+        lambda *_args: None,
+        {"username": "Duplicate Name", "steamid": "76561198000000001"},
+        True,
+    )
+
+    assert context is None
+    assert "玩家标识不完整" in failure["reason"]
 
 
 def test_fast_parse_executor_uses_spawn_and_executes_picklable_work():
@@ -70,7 +211,7 @@ def test_fast_mode_overlaps_download_and_parse_but_keeps_output_order(
     coordination_errors = []
     download_call_count = 0
 
-    def fake_download(match_code, demo_url, dest_dir):
+    def fake_download(match_code, demo_url, dest_dir, progress_cb=None):
         nonlocal download_call_count
         with counter_lock:
             call_index = download_call_count
@@ -120,11 +261,17 @@ def test_fast_mode_overlaps_download_and_parse_but_keeps_output_order(
         }]
 
     monkeypatch.setattr(pipeline, "download_and_extract", fake_download)
-    monkeypatch.setattr(pipeline.parse, "parse_demo", fake_parse)
+    monkeypatch.setattr(
+        pipeline.parse,
+        "parse_demo_with_context",
+        lambda path, steamid: (fake_parse(path, steamid), object(), {}, []),
+    )
     monkeypatch.setattr(
         pipeline.combat,
-        "parse_combat_stats",
-        lambda path, steamid: {"kd": 1.0, "awp_rounds": 1, "total_rounds": 2},
+        "parse_combat_stats_from_context",
+        lambda parser, events, steamid, classified=None: {
+            "kd": 1.0, "awp_rounds": 1, "total_rounds": 2,
+        },
     )
     built_rounds = {}
 
@@ -177,8 +324,8 @@ def test_fast_mode_overlaps_download_and_parse_but_keeps_output_order(
     assert counters["max_downloads"] >= 2
     assert counters["max_parses"] >= 2
     assert counters["download_parse_overlap"] is True
-    assert any("快速下载" in item[4] for item in progress)
-    assert any("并行解析" in item[4] for item in progress)
+    assert any("下载 demo" in item[4] and "·" in item[4] for item in progress)
+    assert any("解析 demo" in item[4] for item in progress)
     summary = json.loads(
         (tmp_path / "output" / "analysis_summary.json").read_text("utf-8")
     )
@@ -195,7 +342,7 @@ def test_fast_mode_keeps_demo_offsets_when_an_earlier_parse_is_empty(
     monkeypatch.setattr(
         pipeline,
         "download_and_extract",
-        lambda match_code, demo_url, dest_dir: [
+        lambda match_code, demo_url, dest_dir, progress_cb=None: [
             str(tmp_path / f"{match_code}.dem")
         ],
     )
@@ -211,11 +358,15 @@ def test_fast_mode_keeps_demo_offsets_when_an_earlier_parse_is_empty(
             "grenades": [],
         }]
 
-    monkeypatch.setattr(pipeline.parse, "parse_demo", fake_parse)
+    monkeypatch.setattr(
+        pipeline.parse,
+        "parse_demo_with_context",
+        lambda path, steamid: (fake_parse(path, steamid), path, {}, []),
+    )
     monkeypatch.setattr(
         pipeline.combat,
-        "parse_combat_stats",
-        lambda path, steamid: {
+        "parse_combat_stats_from_context",
+        lambda path, events, steamid, classified=None: {
             "kd": 1.0,
             "awp_rounds": 0,
             "total_rounds": 1,
@@ -254,12 +405,149 @@ def test_fast_mode_keeps_demo_offsets_when_an_earlier_parse_is_empty(
     ]
 
 
+def test_fast_download_slots_are_fair_and_player_stages_do_not_regress(
+    tmp_path, monkeypatch
+):
+    _install_fast_pipeline_fakes(tmp_path, monkeypatch, demos_per_player=3)
+    calls = []
+    calls_lock = threading.Lock()
+    first_wave_ready = threading.Event()
+    release_first_wave = threading.Event()
+
+    def fake_download(match_code, demo_url, dest_dir, progress_cb=None):
+        with calls_lock:
+            calls.append(match_code)
+            if len(calls) >= 3:
+                first_wave_ready.set()
+        if not release_first_wave.wait(timeout=5):
+            raise AssertionError("test did not release the fair download wave")
+        if progress_cb:
+            progress_cb(1, 1)
+        return [str(tmp_path / f"{match_code}.dem")]
+
+    monkeypatch.setattr(pipeline, "download_and_extract", fake_download)
+    monkeypatch.setattr(
+        pipeline.parse,
+        "parse_demo_with_context",
+        lambda path, steamid: ([{
+            "official_num": 1,
+            "side": "CT",
+            "rtype": "Buy",
+            "path": [],
+            "grenades": [],
+        }], object(), {}, []),
+    )
+    monkeypatch.setattr(
+        pipeline.combat,
+        "parse_combat_stats_from_context",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        pipeline.player_json,
+        "build",
+        lambda username, domain, steamid, map_name, rounds, combat_stats: {
+            "round_count": len(rounds), "combat_stats": combat_stats,
+        },
+    )
+    progress = []
+
+    def release_when_fair():
+        if first_wave_ready.wait(timeout=5):
+            release_first_wave.set()
+
+    coordinator = threading.Thread(target=release_when_fair, daemon=True)
+    coordinator.start()
+    results, failed = pipeline.run_fast(
+        ["Alpha", "Bravo", "Charlie"], "de_mirage", max_demos=3,
+        progress_cb=lambda *args: progress.append(args),
+        download_workers=3, parse_workers=1,
+    )
+    coordinator.join(timeout=5)
+
+    assert failed == []
+    assert len(results) == 3
+    assert set(calls[:3]) == {
+        "domain-alpha-match-0",
+        "domain-bravo-match-0",
+        "domain-charlie-match-0",
+    }
+    for player_index in range(3):
+        steps = [item[3] for item in progress if item[0] == player_index]
+        assert steps == sorted(steps)
+
+
+def test_fast_download_slots_are_reused_when_other_players_fail_discovery(
+    tmp_path, monkeypatch
+):
+    _install_fast_pipeline_fakes(tmp_path, monkeypatch, demos_per_player=3)
+    monkeypatch.setattr(
+        pipeline.api_client,
+        "search_player",
+        lambda username: (
+            ("domain-alpha", "Alpha")
+            if username == "Alpha" else (None, None)
+        ),
+    )
+    calls = []
+    all_slots_used = threading.Event()
+    release = threading.Event()
+
+    def fake_download(match_code, demo_url, dest_dir, progress_cb=None):
+        calls.append(match_code)
+        if len(calls) >= 3:
+            all_slots_used.set()
+        if not release.wait(timeout=5):
+            raise AssertionError("test did not release download slots")
+        return [str(tmp_path / f"{match_code}.dem")]
+
+    monkeypatch.setattr(pipeline, "download_and_extract", fake_download)
+    monkeypatch.setattr(
+        pipeline.parse,
+        "parse_demo_with_context",
+        lambda path, steamid: ([{
+            "official_num": 1, "side": "CT", "rtype": "Buy",
+            "path": [], "grenades": [],
+        }], object(), {}, []),
+    )
+    monkeypatch.setattr(
+        pipeline.combat, "parse_combat_stats_from_context",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        pipeline.player_json, "build",
+        lambda username, domain, steamid, map_name, rounds, combat_stats: {
+            "round_count": len(rounds), "combat_stats": combat_stats,
+        },
+    )
+
+    def release_when_full():
+        if all_slots_used.wait(timeout=5):
+            release.set()
+
+    coordinator = threading.Thread(target=release_when_full, daemon=True)
+    coordinator.start()
+    results, failed = pipeline.run_fast(
+        ["Alpha", "Missing One", "Missing Two"],
+        "de_mirage", max_demos=3, download_workers=3, parse_workers=1,
+    )
+    coordinator.join(timeout=5)
+
+    assert len(results) == 1
+    assert len(failed) == 2
+    assert all_slots_used.is_set()
+    assert set(calls[:3]) == {
+        "domain-alpha-match-0",
+        "domain-alpha-match-1",
+        "domain-alpha-match-2",
+    }
+
+
 def test_fast_mode_offset_failure_is_isolated_to_one_player(tmp_path, monkeypatch):
     _install_fast_pipeline_fakes(tmp_path, monkeypatch, demos_per_player=1)
     monkeypatch.setattr(
         pipeline,
         "download_and_extract",
-        lambda match_code, demo_url, dest_dir: [
+        lambda match_code, demo_url, dest_dir, progress_cb=None: [
             str(tmp_path / f"{match_code}.dem")
         ],
     )
@@ -275,8 +563,14 @@ def test_fast_mode_offset_failure_is_isolated_to_one_player(tmp_path, monkeypatc
             record["official_num"] = 1
         return [record]
 
-    monkeypatch.setattr(pipeline.parse, "parse_demo", fake_parse)
-    monkeypatch.setattr(pipeline.combat, "parse_combat_stats", lambda *args: None)
+    monkeypatch.setattr(
+        pipeline.parse,
+        "parse_demo_with_context",
+        lambda path, steamid: (fake_parse(path, steamid), object(), {}, []),
+    )
+    monkeypatch.setattr(
+        pipeline.combat, "parse_combat_stats_from_context", lambda *args, **kwargs: None
+    )
     monkeypatch.setattr(
         pipeline.player_json,
         "build",
@@ -304,7 +598,7 @@ def test_broken_parse_pool_rejects_players_without_aborting_scan(
     monkeypatch.setattr(
         pipeline,
         "download_and_extract",
-        lambda match_code, demo_url, dest_dir: [
+        lambda match_code, demo_url, dest_dir, progress_cb=None: [
             str(tmp_path / f"{match_code}.dem")
         ],
     )

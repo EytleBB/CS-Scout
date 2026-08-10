@@ -39,6 +39,15 @@ PWA_PARSE_MEMORY_PER_WORKER_MB = 2048
 PWA_PARSE_MEMORY_RESERVE_MB = 768
 
 
+class AnalysisCancelled(RuntimeError):
+    """Raised when the current Perfect World analysis is cancelled."""
+
+
+def _raise_if_cancelled(cancel_event) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise AnalysisCancelled("分析已取消")
+
+
 def _load_cs_scout_modules():
     server_path = str(SERVER_DIR)
     if server_path not in sys.path:
@@ -341,6 +350,7 @@ def run_roster(
     *,
     current_match_id: str | None = None,
     target_scope: str | None = None,
+    source: str = "auto_current_match",
     demo_dir: str | os.PathLike[str] = DEFAULT_DEMO_DIR,
     output_dir: str | os.PathLike[str] = DEFAULT_OUTPUT_DIR,
     client: PerfectWorldClient | None = None,
@@ -350,8 +360,10 @@ def run_roster(
     discovery_workers: int | None = None,
     download_workers: int | None = None,
     parse_workers: int | None = None,
+    cancel_event=None,
 ) -> dict[str, object]:
-    """Analyze an automatically detected roster with shared Demo downloads."""
+    """Analyze a resolved roster with shared Demo downloads."""
+    _raise_if_cancelled(cancel_event)
     total_started = time.perf_counter()
     safe_account = validate_steamid(account_steamid)
     normalized_map = normalize_map_name(map_name)
@@ -380,7 +392,12 @@ def run_roster(
     _combat, maps, _parse, _player_json = _load_cs_scout_modules()
     maps.load_map(normalized_map)
     pwa = client or PerfectWorldClient(safe_account, access_token)
-    emit = progress or (lambda _message: None)
+    raw_emit = progress or (lambda _message: None)
+
+    def emit(message: str) -> None:
+        _raise_if_cancelled(cancel_event)
+        raw_emit(message)
+        _raise_if_cancelled(cancel_event)
     result_dir = Path(output_dir).resolve()
     shared_demo_dir = Path(demo_dir).resolve() / "shared"
     discovery_worker_count = _worker_count(
@@ -407,15 +424,18 @@ def run_roster(
     failure_by_index: dict[int, dict[str, str]] = {}
 
     def discover_player(player_index, player):
+        _raise_if_cancelled(cancel_event)
         discovery_client = (
             pwa if client is not None
             else PerfectWorldClient(safe_account, access_token)
         )
-        return player_index, discovery_client.discover(
+        result = discovery_client.discover(
                 map_name=normalized_map,
                 limit=int(max_demos),
                 target_steamid=player.steamid,
             )
+        _raise_if_cancelled(cancel_event)
+        return player_index, result
 
     completed_discoveries = 0
     with ThreadPoolExecutor(
@@ -426,21 +446,29 @@ def run_roster(
             discovery_pool.submit(discover_player, index, player): (index, player)
             for index, player in enumerate(ordered_players)
         }
-        for future in as_completed(discovery_futures):
-            index, player = discovery_futures[future]
-            try:
-                _returned_index, demos = future.result()
-                discoveries[player.steamid] = demos
-            except Exception:
-                discoveries[player.steamid] = []
-                failure_by_index[index] = {
-                    "username": player.nickname,
-                    "reason": "历史对局查询失败",
-                }
-            completed_discoveries += 1
-            emit(
-                f"历史对局查询完成（{completed_discoveries}/{len(ordered_players)}）…"
-            )
+        try:
+            for future in as_completed(discovery_futures):
+                _raise_if_cancelled(cancel_event)
+                index, player = discovery_futures[future]
+                try:
+                    _returned_index, demos = future.result()
+                    discoveries[player.steamid] = demos
+                except AnalysisCancelled:
+                    raise
+                except Exception:
+                    discoveries[player.steamid] = []
+                    failure_by_index[index] = {
+                        "username": player.nickname,
+                        "reason": "历史对局查询失败",
+                    }
+                completed_discoveries += 1
+                emit(
+                    f"历史对局查询完成（{completed_discoveries}/{len(ordered_players)}）…"
+                )
+        finally:
+            if cancel_event is not None and cancel_event.is_set():
+                for future in discovery_futures:
+                    future.cancel()
     discovery_seconds = time.perf_counter() - discovery_started
 
     # Several detected players often share old matches. Cache by match id so a
@@ -456,13 +484,16 @@ def run_roster(
     download_headers = pwa.build_download_headers() if unique_demos else {}
 
     def download_demo(demo):
-        return demo.match_id, downloader(
+        _raise_if_cancelled(cancel_event)
+        result = downloader(
             demo.match_id,
             demo.demo_url,
             shared_demo_dir,
             headers=dict(download_headers),
             require_public_dns=require_public_dns,
         )
+        _raise_if_cancelled(cancel_event)
+        return demo.match_id, result
 
     completed_downloads = 0
     if unique_demos:
@@ -474,15 +505,23 @@ def run_roster(
                 download_pool.submit(download_demo, demo): demo
                 for demo in unique_demos.values()
             }
-            for future in as_completed(download_futures):
-                demo = download_futures[future]
-                try:
-                    match_id, dem_files = future.result()
-                    download_cache[match_id] = dem_files
-                except Exception:
-                    failed_downloads.add(demo.match_id)
-                completed_downloads += 1
-                emit(f"历史 Demo 准备完成（{completed_downloads}/{total_unique}）…")
+            try:
+                for future in as_completed(download_futures):
+                    _raise_if_cancelled(cancel_event)
+                    demo = download_futures[future]
+                    try:
+                        match_id, dem_files = future.result()
+                        download_cache[match_id] = dem_files
+                    except AnalysisCancelled:
+                        raise
+                    except Exception:
+                        failed_downloads.add(demo.match_id)
+                    completed_downloads += 1
+                    emit(f"历史 Demo 准备完成（{completed_downloads}/{total_unique}）…")
+            finally:
+                if cancel_event is not None and cancel_event.is_set():
+                    for future in download_futures:
+                        future.cancel()
     download_seconds = time.perf_counter() - download_started
 
     parse_started = time.perf_counter()
@@ -519,6 +558,7 @@ def run_roster(
 
     if parse_worker_count == 1:
         for index, player, demos_and_files, demos_found in parse_jobs:
+            _raise_if_cancelled(cancel_event)
             accept_parse_result(_parse_player_output(
                 index, player, demos_and_files, normalized_map,
                 str(result_dir), demos_found,
@@ -540,22 +580,29 @@ def run_roster(
                 ): (index, player)
                 for index, player, demos_and_files, demos_found in parse_jobs
             }
-            for future in as_completed(parse_futures):
-                index, player = parse_futures[future]
-                try:
-                    accept_parse_result(future.result())
-                except Exception:
-                    accept_parse_result((index, None, {
-                        "username": player.nickname,
-                        "reason": "Demo 并行解析失败",
-                    }))
+            try:
+                for future in as_completed(parse_futures):
+                    _raise_if_cancelled(cancel_event)
+                    index, player = parse_futures[future]
+                    try:
+                        accept_parse_result(future.result())
+                    except Exception:
+                        accept_parse_result((index, None, {
+                            "username": player.nickname,
+                            "reason": "Demo 并行解析失败",
+                        }))
+            finally:
+                if cancel_event is not None and cancel_event.is_set():
+                    for future in parse_futures:
+                        future.cancel()
+    _raise_if_cancelled(cancel_event)
     parse_seconds = time.perf_counter() - parse_started
     results = [result_by_index[index] for index in sorted(result_by_index)]
     failed = [failure_by_index[index] for index in sorted(failure_by_index)]
 
     summary = {
         "platform": "perfectworld",
-        "source": "auto_current_match",
+        "source": str(source),
         "current_match_id": current_match_id,
         "target_scope": target_scope,
         "map": normalized_map,
@@ -577,5 +624,6 @@ def run_roster(
         "results": results,
     }
     _write_json_atomic(result_dir / "analysis_summary.json", summary)
-    emit(f"完美平台自动侦察完成：成功 {len(results)} 人，失败 {len(failed)} 人。")
+    completion_label = "手动分析" if source == "manual_usernames" else "自动侦察"
+    emit(f"完美平台{completion_label}完成：成功 {len(results)} 人，失败 {len(failed)} 人。")
     return summary

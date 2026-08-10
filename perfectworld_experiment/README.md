@@ -35,13 +35,12 @@
 .\.venv\Scripts\python.exe -m pip install -r .\perfectworld_experiment\requirements.txt
 ```
 
-本机需要安装并登录完美世界竞技平台。签名桥默认读取：
+本机需要安装并登录完美世界竞技平台。CS-Scout 会优先从正在运行的客户端定位
+`plugin\PvpAlive.dll`，然后检查上次选择目录和默认安装目录。找不到时直接在网页点击
+“选择目录”并选择完美平台安装目录；验证成功后会自动记住，无需设置环境变量。
 
-```text
-C:\Program Files (x86)\perfectworldarena\plugin\PvpAlive.dll
-```
-
-安装位置不同时可设置 `CS_SCOUT_PWA_DLL`。
+程序只接受 `plugin\PvpAlive.dll`，并在使用前检查 x86 架构、完美世界官方数字签名和
+`swapData` 导出。`CS_SCOUT_PWA_DLL` 仅保留给开发者临时覆盖自动定位结果。
 
 ## 使用
 
@@ -84,6 +83,8 @@ $env:CS_SCOUT_LOCAL_MODE='1'
 - Token、`Pwa-Jt`、签名与带签名下载 URL 不写入日志、JSON 或网页状态；
 - 网页默认只监听 `127.0.0.1`，不应直接暴露到公网；
 - 完美接口仅接受本机回环地址访问，完美输出与 5E 输出分目录保存。
+- 用户选择的完美平台安装目录只保存在 `%LOCALAPPDATA%\CS-Scout\pwa-install.json`，
+  不包含 Token、签名或账号信息。
 
 ## 后续稳定性验收
 

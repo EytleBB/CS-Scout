@@ -11,9 +11,10 @@ import time
 
 from flask import Flask, abort, jsonify, render_template, send_from_directory
 
+from . import native_signer
 from .auto_scout import prepare_auto_state, run_auto_state
 from .current_match import read_local_state, wait_for_current_match
-from .pipeline import DEFAULT_OUTPUT_DIR
+from .pipeline import AnalysisCancelled, DEFAULT_OUTPUT_DIR
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +32,7 @@ class AutoScoutService:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._analysis_requested = threading.Event()
+        self._analysis_cancel = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_match_id: str | None = None
         self._retry_match_id: str | None = None
@@ -48,6 +50,13 @@ class AutoScoutService:
             "workers": {},
             "results": [],
             "failed": [],
+            "signer": {
+                "ready": False,
+                "code": "checking",
+                "message": "正在检测完美平台组件…",
+                "path": None,
+                "source": None,
+            },
             "updated_at": time.time(),
         }
 
@@ -70,6 +79,39 @@ class AutoScoutService:
         )
         self._thread.start()
 
+    def refresh_signer_status(self, *, force: bool = False) -> dict[str, object]:
+        """Refresh the installed official component without exposing secrets."""
+        signer = native_signer.get_dll_status(force=force)
+        with self._lock:
+            phase = str(self._state.get("phase") or "waiting")
+            self._state["signer"] = signer
+            if not signer["ready"] and phase in {
+                "waiting", "setup_required", "error", "awaiting_confirmation"
+            }:
+                self._state["phase"] = "setup_required"
+                self._state["message"] = str(signer["message"])
+            elif signer["ready"] and phase == "setup_required":
+                self._state["phase"] = "waiting"
+                self._state["message"] = "等待进入完美平台对局…"
+            self._state["updated_at"] = time.time()
+        return signer
+
+    def choose_install_directory(self) -> dict[str, object]:
+        """Open the Windows directory picker and remember a valid install root."""
+        with self._lock:
+            if self._state.get("phase") in {
+                "detected", "queued", "analyzing", "cancelling"
+            }:
+                return {
+                    "selected": False,
+                    "cancelled": False,
+                    "error": "分析进行中，暂时不能更改目录",
+                    "signer": deepcopy(self._state.get("signer", {})),
+                }
+        result = native_signer.choose_install_directory()
+        self.refresh_signer_status()
+        return result
+
     def configure(self, *, max_demos: int) -> dict[str, object]:
         """Update settings used by the next detected match.
 
@@ -78,7 +120,9 @@ class AutoScoutService:
         """
         max_demos = max(1, min(10, int(max_demos)))
         with self._lock:
-            busy = self._state.get("phase") in {"detected", "queued", "analyzing"}
+            busy = self._state.get("phase") in {
+                "detected", "queued", "analyzing", "cancelling"
+            }
             if not busy:
                 self.max_demos = max_demos
                 self._state["max_demos"] = max_demos
@@ -90,9 +134,18 @@ class AutoScoutService:
 
     def request_analysis(self) -> dict[str, object]:
         """Queue analysis only after the detected target list is confirmed."""
+        signer = self.refresh_signer_status(force=True)
+        if not signer["ready"]:
+            return {
+                "accepted": False,
+                "phase": "setup_required",
+                "error": str(signer["message"]),
+                "signer": signer,
+            }
         with self._lock:
             accepted = self._state.get("phase") == "awaiting_confirmation"
             if accepted:
+                self._analysis_cancel.clear()
                 self._state["phase"] = "queued"
                 self._state["message"] = "已确认对手，准备开始分析…"
                 self._state["updated_at"] = time.time()
@@ -101,11 +154,29 @@ class AutoScoutService:
             self._analysis_requested.set()
         return {"accepted": accepted, "phase": phase}
 
+    def cancel_analysis(self) -> dict[str, object]:
+        """Request a cooperative stop while keeping the detected roster."""
+        with self._lock:
+            accepted = self._state.get("phase") in {
+                "queued", "analyzing", "cancelling"
+            }
+            if accepted:
+                self._analysis_cancel.set()
+                self._state["phase"] = "cancelling"
+                self._state["message"] = "正在取消分析…"
+                self._state["updated_at"] = time.time()
+            phase = str(self._state.get("phase", "waiting"))
+        return {"accepted": accepted, "phase": phase}
+
     def stop(self) -> None:
         self._stop.set()
 
     def _watch_loop(self) -> None:
         while not self._stop.is_set():
+            signer = self.refresh_signer_status()
+            if not signer["ready"]:
+                self._stop.wait(3.0)
+                continue
             try:
                 local = wait_for_current_match(timeout=3.0, poll_interval=0.5)
             except TimeoutError:
@@ -158,52 +229,69 @@ class AutoScoutService:
                 self._retry_after = time.monotonic() + 30.0
                 continue
 
+            def progress(message: str) -> None:
+                if not self._analysis_cancel.is_set():
+                    self._update(phase="analyzing", message=message)
+
             self._analysis_requested.clear()
             self._update(
                 phase="awaiting_confirmation",
                 message=f"已识别 {len(targets.players)} 名对手，请确认后开始分析",
                 targets=[{"username": player.nickname} for player in targets.players],
             )
-
             match_ended = False
+            analysis_failed = False
+            summary = None
             while not self._stop.is_set():
-                if self._analysis_requested.wait(0.5):
-                    self._analysis_requested.clear()
+                while not self._stop.is_set():
+                    if self._analysis_requested.wait(0.5):
+                        self._analysis_requested.clear()
+                        break
+                    now = read_local_state()
+                    current = now.current_match
+                    if current is None or current.match_id != match.match_id:
+                        match_ended = True
+                        self._update(
+                            phase="waiting",
+                            message="等待进入下一场完美平台对局…",
+                            current_match_id=None,
+                            map=None,
+                            roster_count=0,
+                            targets=[],
+                        )
+                        break
+                if match_ended or self._stop.is_set():
                     break
-                now = read_local_state()
-                current = now.current_match
-                if current is None or current.match_id != match.match_id:
-                    match_ended = True
-                    self._update(
-                        phase="waiting",
-                        message="等待进入下一场完美平台对局…",
-                        current_match_id=None,
-                        map=None,
-                        roster_count=0,
-                        targets=[],
+
+                try:
+                    with self._lock:
+                        max_demos = self.max_demos
+                    summary = run_auto_state(
+                        local,
+                        max_demos,
+                        all_players=self.all_players,
+                        targets=targets,
+                        progress=progress,
+                        cancel_event=self._analysis_cancel,
                     )
-                    break
-            if match_ended or self._stop.is_set():
+                except AnalysisCancelled:
+                    self._analysis_cancel.clear()
+                    self._update(
+                        phase="awaiting_confirmation",
+                        message="分析已取消，可重新开始",
+                    )
+                    continue
+                except Exception as exc:
+                    # Protocol errors are deliberately sanitized by lower layers.
+                    self._update(phase="error", message=f"自动侦察失败：{exc}")
+                    self._retry_match_id = match.match_id
+                    self._retry_after = time.monotonic() + 30.0
+                    analysis_failed = True
+                break
+
+            if match_ended or self._stop.is_set() or analysis_failed:
                 continue
-
-            def progress(message: str) -> None:
-                self._update(phase="analyzing", message=message)
-
-            try:
-                with self._lock:
-                    max_demos = self.max_demos
-                summary = run_auto_state(
-                    local,
-                    max_demos,
-                    all_players=self.all_players,
-                    targets=targets,
-                    progress=progress,
-                )
-            except Exception as exc:
-                # Protocol errors are deliberately sanitized by lower layers.
-                self._update(phase="error", message=f"自动侦察失败：{exc}")
-                self._retry_match_id = match.match_id
-                self._retry_after = time.monotonic() + 30.0
+            if summary is None:
                 continue
 
             self._last_match_id = match.match_id

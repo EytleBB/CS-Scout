@@ -209,12 +209,20 @@
   .sidebar {
     width: 276px;
     flex: 0 0 276px;
-    padding: 24px 18px;
-    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
     border-right: 1px solid var(--border-color);
     background-color: rgba(26, 26, 26, .86);
     -webkit-backdrop-filter: var(--glass-blur);
     backdrop-filter: var(--glass-blur);
+  }
+  .sidebar-scroll {
+    min-height: 0;
+    flex: 1 1 auto;
+    padding: 24px 18px 12px;
+    overflow-y: auto;
   }
   .form-section + .form-section {
     margin-top: 14px;
@@ -267,6 +275,7 @@
     font-weight: 550;
   }
   .platform-toggle,
+  .scout-mode-toggle,
   .analysis-mode-toggle {
     width: 100%;
     margin-top: 5px;
@@ -278,6 +287,7 @@
     background: rgba(0, 0, 0, .18);
   }
   .platform-toggle button,
+  .scout-mode-toggle button,
   .analysis-mode-toggle button {
     min-height: 36px;
     flex: 1 1 50%;
@@ -289,25 +299,58 @@
     font-weight: 700;
     transition: color .18s ease, background-color .18s ease, box-shadow .18s ease;
   }
-  .platform-toggle button:hover:not(:disabled),
-  .analysis-mode-toggle button:hover:not(:disabled) { color: var(--text-color-primary); }
+  .platform-toggle button:hover:not(:disabled):not(.active),
+  .scout-mode-toggle button:hover:not(:disabled):not(.active),
+  .analysis-mode-toggle button:hover:not(:disabled):not(.active) { color: var(--text-color-primary); }
   .platform-toggle button.active,
+  .scout-mode-toggle button.active,
   .analysis-mode-toggle button.active {
     background: var(--text-color-primary);
     color: var(--accent-ink);
     box-shadow: 0 3px 10px rgba(0, 0, 0, .26);
   }
   .platform-toggle button:disabled,
+  .scout-mode-toggle button:disabled,
   .analysis-mode-toggle button:disabled { cursor: not-allowed; opacity: .55; }
-  .pwa-hint {
-    margin-top: 10px;
-    padding: 10px 11px;
-    border: 1px solid rgba(255, 255, 255, .08);
+  .scout-mode-picker { margin-top: 12px; }
+  .pwa-component {
+    margin-top: 9px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    color: var(--text-color-secondary);
+    font-size: 11px;
+  }
+  .pwa-component button {
+    flex: 0 0 auto;
+    padding: 6px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, .035);
+    color: var(--text-color-primary);
+    font-size: 11px;
+  }
+  .pwa-component button:disabled { cursor: not-allowed; opacity: .55; }
+  .fivee-team-choice {
+    margin-top: 9px;
+    display: grid;
+    gap: 7px;
+  }
+  .fivee-team-choice button {
+    width: 100%;
+    padding: 8px 9px;
+    border: 1px solid var(--border-color);
     border-radius: 7px;
     background: rgba(255, 255, 255, .035);
     color: var(--text-color-secondary);
     font-size: 11px;
-    line-height: 1.55;
+    line-height: 1.45;
+    text-align: left;
+  }
+  .fivee-team-choice button:hover:not(:disabled) {
+    border-color: rgba(255, 255, 255, .25);
+    color: var(--text-color-primary);
   }
   #run {
     width: 100%;
@@ -325,21 +368,83 @@
   #run:hover:not(:disabled) { background: transparent; color: var(--text-color-primary); }
   #run:active:not(:disabled) { transform: translateY(1px); }
   #run:disabled { cursor: not-allowed; opacity: .48; }
-  #status,
-  #failed {
-    margin-top: 12px;
-    padding: 10px 11px;
+  #run.cancel-action {
+    border-color: var(--danger);
+    background: var(--danger);
+    color: #fff;
+  }
+  #run.cancel-action::after { content: ""; margin-left: 0; }
+  #run.cancel-action:hover:not(:disabled) {
+    background: transparent;
+    color: var(--danger);
+  }
+  .progress-panel {
+    flex: 0 0 auto;
+    margin: 12px 18px 18px;
+    padding: 11px;
     border: 1px solid var(--border-color-light);
-    border-radius: 7px;
-    background: rgba(0, 0, 0, .16);
+    border-radius: 9px;
+    background: rgba(23, 23, 23, .96);
+    box-shadow: 0 -8px 22px rgba(0, 0, 0, .22);
+    -webkit-backdrop-filter: blur(16px);
+    backdrop-filter: blur(16px);
+  }
+  .progress-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    color: var(--text-color-secondary);
+    font-size: 10px;
+    letter-spacing: .04em;
+  }
+  #progress-count {
+    color: var(--text-color-primary);
+    font: 600 11px ui-monospace, SFMono-Regular, Consolas, monospace;
+    letter-spacing: 0;
+  }
+  .progress-track {
+    height: 5px;
+    margin-top: 8px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, .09);
+  }
+  #progress-fill {
+    display: block;
+    width: 0;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--text-color-primary);
+    transition: width .25s ease;
+  }
+  .progress-panel[data-state="error"] #progress-fill { background: var(--danger); }
+  #status {
+    min-height: 17px;
+    margin-top: 8px;
+    overflow: hidden;
+    color: var(--text-color-secondary);
     font-size: 11px;
-    line-height: 1.55;
+    line-height: 1.45;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #failure-details {
+    margin-top: 7px;
+    color: var(--danger);
+    font-size: 10px;
+  }
+  #failure-details summary { cursor: pointer; user-select: none; }
+  #failed {
+    max-height: 92px;
+    margin-top: 6px;
+    padding-top: 6px;
+    overflow-y: auto;
+    border-top: 1px solid rgba(255, 255, 255, .07);
+    line-height: 1.45;
     overflow-wrap: anywhere;
   }
-  #status { color: var(--text-color-secondary); }
-  #failed { color: var(--danger); }
-  #status:empty,
-  #failed:empty { display: none; }
+  #failed > div + div { margin-top: 4px; }
 
   .content-area {
     min-width: 0;
@@ -520,11 +625,13 @@
     .layout { display: block; height: auto; min-height: calc(100dvh - var(--header-height)); }
     .sidebar {
       width: 100%;
-      padding: 20px 18px;
+      display: block;
       overflow: visible;
       border-right: 0;
       border-bottom: 1px solid var(--border-color);
     }
+    .sidebar-scroll { padding: 20px 18px 12px; overflow: visible; }
+    .progress-panel { margin: 0 18px 20px; }
     .content-area { padding: 18px 14px 24px; overflow: visible; }
     .map-view { min-height: 0; padding: 12px; }
     .empty-state { min-height: 400px; }
@@ -584,7 +691,8 @@
  </header>
   <div class="layout app-container">
    <aside class="sidebar" aria-label="扫描设置">
-    <div class="platform-picker">
+    <div class="sidebar-scroll">
+     <div class="platform-picker">
      <span class="platform-caption">平台</span>
      <div class="platform-toggle" role="group" aria-label="数据平台切换">
       <button id="platform-5e" type="button" data-platform="5e" class="active" aria-pressed="true">5E</button>
@@ -592,16 +700,33 @@
       <button id="platform-perfectworld" type="button" data-platform="perfectworld" aria-pressed="false">完美平台</button>
       {% endif %}
      </div>
+     {% if local_mode %}
+     <div class="scout-mode-picker">
+      <span class="platform-caption">方式</span>
+      <div class="scout-mode-toggle" role="group" aria-label="侦察方式">
+       <button id="scout-auto" type="button" data-scout-mode="auto" class="active" aria-pressed="true">自动</button>
+       <button id="scout-manual" type="button" data-scout-mode="manual" aria-pressed="false">手动</button>
+      </div>
+     </div>
+     {% endif %}
+     {% if local_mode %}
+     <div id="pwa-component" class="pwa-component" hidden>
+      <span id="pwa-component-status">正在检测组件…</span>
+      <button id="pwa-select-directory" type="button">选择目录</button>
+     </div>
+     {% endif %}
     </div>
     <div class="form-section">
      <label for="map">地图</label>
     <select id="map" aria-label="地图"></select>
     <label for="depth">每人 Demo 数</label>
     <input id="depth" type="number" min="1" max="10" value="6">
-    <div id="pwa-hint" class="pwa-hint" hidden>匹配到对局后会自动填入对手；请确认名单，再点击开始分析。</div>
+     {% if local_mode %}
+     <div id="fivee-team-choice" class="fivee-team-choice" role="group" aria-label="选择本人所在队伍" hidden></div>
+     {% endif %}
     </div>
     <div id="platform-player-list" class="form-section">
-     <label id="player-input-label" for="u0">5E 用户名</label>
+     <label id="player-input-label" for="u0">对手</label>
     <div class="player-inputs">
      <input id="u0" autocomplete="off" maxlength="64" placeholder="对手用户名 1">
      <input id="u1" autocomplete="off" maxlength="64" aria-label="对手用户名 2" placeholder="对手用户名 2">
@@ -618,13 +743,23 @@
      </div>
      {% endif %}
      <div class="analysis-mode-toggle" data-five-e-only role="group" aria-label="分析模式">
-      <button id="mode-normal" type="button" data-analysis-mode="normal" class="active" aria-label="普通模式，原有稳定流水线" aria-pressed="true" title="原有稳定流水线">普通</button>
-      <button id="mode-fast" type="button" data-analysis-mode="fast" aria-label="快速模式，并行下载与解析" aria-pressed="false" title="并行下载与解析">快速</button>
+       <button id="mode-normal" type="button" data-analysis-mode="normal" class="active" aria-label="普通分析" aria-pressed="true">普通</button>
+       <button id="mode-fast" type="button" data-analysis-mode="fast" aria-label="快速分析" aria-pressed="false">快速</button>
+      </div>
+      <button id="run" type="button">开始分析</button>
+    </div>
+    </div>
+    <section id="progress-panel" class="progress-panel" data-state="idle" aria-label="任务进度">
+     <div class="progress-heading"><span>任务进度</span><span id="progress-count">—</span></div>
+     <div id="progress-track" class="progress-track" role="progressbar" aria-label="分析进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+      <span id="progress-fill"></span>
      </div>
-     <button id="run" type="button">开始扫描</button>
-   </div>
-   <div id="status" role="status" aria-live="polite"></div>
-   <div id="failed" aria-live="polite"></div>
+     <div id="status" role="status" aria-live="polite">等待对局</div>
+     <details id="failure-details" hidden>
+      <summary id="failure-summary">失败 0</summary>
+      <div id="failed" aria-live="polite"></div>
+     </details>
+    </section>
    </aside>
    <main class="content-area" aria-label="对手回放分析">
     <div class="content-shell">
@@ -632,8 +767,7 @@
      <div id="empty-state" class="empty-state">
       <div class="empty-state-inner">
        <div class="map-placeholder" aria-hidden="true"><span class="map-placeholder-ring"></span></div>
-       <strong id="empty-title">等待扫描数据</strong>
-       <p id="empty-description">完成左侧设置并开始扫描后，这里会显示合并手枪局和每位玩家的 Buy 回放。</p>
+       <strong id="empty-title">等待分析</strong>
       </div>
      </div>
      <div id="view-toolbar" class="view-toolbar" hidden>

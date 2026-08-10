@@ -1,6 +1,7 @@
 import os
 import sys
 import inspect
+import threading
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -38,6 +39,38 @@ def test_get_player_uuid_matches_domain_in_gate_detail(monkeypatch):
         "target-domain", [{"match_code": "recent-match"}]
     ) == PLAYER_UUID
     assert seen == ["recent-match"]
+
+
+def test_resolve_player_identity_accepts_direct_steamid():
+    steamid = "76561198000000001"
+
+    assert api_client.resolve_player_identity(steamid) == {
+        "username": steamid,
+        "domain": "",
+        "steamid": steamid,
+    }
+
+
+def test_resolve_player_identity_uses_stable_domain(monkeypatch):
+    monkeypatch.setattr(
+        api_client, "search_player", lambda username: ("alpha-domain", "Alpha")
+    )
+    monkeypatch.setattr(
+        api_client,
+        "_get_public_matches",
+        lambda domain, match_type=9: [{"match_code": "recent-match"}],
+    )
+    monkeypatch.setattr(
+        api_client,
+        "get_steamid_for_player",
+        lambda match_code, username, domain=None: "76561198000000002",
+    )
+
+    assert api_client.resolve_player_identity("alpha") == {
+        "username": "Alpha",
+        "domain": "alpha-domain",
+        "steamid": "76561198000000002",
+    }
 
 
 def test_gate_match_page_sends_uuid_limit_and_distinct_page(monkeypatch):
@@ -138,6 +171,59 @@ def test_gate_detail_url_overrides_list_url(monkeypatch):
         "match_code": "map-match",
         "demo_url": "https://authoritative.example/demo.zip",
     }]
+
+
+def test_gate_detail_requests_overlap_keep_history_order_and_identity(monkeypatch):
+    rows = [
+        {"match_id": "newer-match", "map": "de_mirage"},
+        {"match_id": "older-match", "map": "de_mirage"},
+    ]
+    monkeypatch.setattr(
+        api_client,
+        "_get_gate_match_page",
+        lambda uuid, page, limit=30: rows,
+    )
+
+    lock = threading.Lock()
+    both_started = threading.Event()
+    release = threading.Event()
+    active = 0
+    max_active = 0
+
+    def fake_detail(match_code):
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+            if active >= 2:
+                both_started.set()
+        if not both_started.wait(timeout=2):
+            raise AssertionError("detail requests did not overlap")
+        release.set()
+        if not release.wait(timeout=2):
+            raise AssertionError("detail requests were not released")
+        with lock:
+            active -= 1
+        return {
+            "main": {"demo_url": f"https://detail.example/{match_code}.zip"},
+            "group_1": [{
+                "user_info": {"user_data": {
+                    "uuid": PLAYER_UUID,
+                    "steam": {"steamId": "76561198000000001"},
+                }}
+            }],
+            "group_2": [],
+        }
+
+    monkeypatch.setattr(api_client, "get_match_detail", fake_detail)
+
+    demos = api_client._get_gate_demos(PLAYER_UUID, "de_mirage", 2)
+
+    assert max_active >= 2
+    assert [demo["match_code"] for demo in demos] == [
+        "newer-match", "older-match",
+    ]
+    assert all(demo["steamid"] == "76561198000000001" for demo in demos)
 
 
 def test_retrying_session_covers_connections_and_5xx():

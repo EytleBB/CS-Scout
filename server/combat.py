@@ -50,7 +50,7 @@ def parse_combat_stats_from_context(parser, events, steamid, classified=None):
                     k, d = int(row["kills_total"].iloc[0]), int(row["deaths_total"].iloc[0])
                     kd_val = round(k / max(d, 1), 2)
             except Exception as e:
-                log.warning(f"scoreboard parse failed {path}: {e}")
+                log.warning("scoreboard parse failed for Steam ID %s: %s", sid, e)
 
     if classified is None:
         rounds = parse.get_round_table(evts)

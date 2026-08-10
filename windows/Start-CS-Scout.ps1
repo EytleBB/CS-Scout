@@ -253,10 +253,25 @@ try {
     Write-Host "CS-Scout is starting on this computer only..." -ForegroundColor Cyan
     Write-Host "Data: $localState"
 
+    $fiveeCdpPort = "9222"
+    $parsedFiveeCdpPort = 0
+    if (
+        [int]::TryParse($env:CS_SCOUT_5E_CDP_PORT, [ref]$parsedFiveeCdpPort) -and
+        $parsedFiveeCdpPort -ge 1 -and $parsedFiveeCdpPort -le 65535
+    ) {
+        $fiveeCdpPort = [string]$parsedFiveeCdpPort
+    }
+    $fiveeAutoLaunch = "1"
+    if ($env:CS_SCOUT_5E_AUTO_LAUNCH -match '^(?i:0|1|true|false|yes|no|on|off)$') {
+        $fiveeAutoLaunch = $env:CS_SCOUT_5E_AUTO_LAUNCH
+    }
+
     $childEnvironment = [ordered]@{
         "CS_SCOUT_HOST" = "127.0.0.1"
         "CS_SCOUT_PORT" = "0"
         "CS_SCOUT_LOCAL_MODE" = "1"
+        "CS_SCOUT_5E_CDP_PORT" = $fiveeCdpPort
+        "CS_SCOUT_5E_AUTO_LAUNCH" = $fiveeAutoLaunch
         "CS_SCOUT_STARTUP_INFO" = $startupInfoPath
         "CS_SCOUT_STARTUP_TOKEN" = $startupToken
         "CS_SCOUT_DEMO_DIR" = $demoDir

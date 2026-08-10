@@ -6,8 +6,28 @@ import time
 from types import SimpleNamespace
 from concurrent.futures import ProcessPoolExecutor
 
+import pytest
+
 from perfectworld_experiment import pipeline
 from perfectworld_experiment.pwa_client import PerfectWorldDemo, PerfectWorldPlayer
+
+
+def test_roster_analysis_honors_cancel_before_start(tmp_path):
+    cancel_event = threading.Event()
+    cancel_event.set()
+
+    with pytest.raises(pipeline.AnalysisCancelled):
+        pipeline.run_roster(
+            [PerfectWorldPlayer("1", "76561198000000001", "Opponent")],
+            "76561198000000002",
+            "token",
+            "de_mirage",
+            1,
+            output_dir=tmp_path / "output",
+            cancel_event=cancel_event,
+        )
+
+    assert not (tmp_path / "output" / "analysis_summary.json").exists()
 
 
 class FakeClient:
