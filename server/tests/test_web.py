@@ -581,24 +581,71 @@ def test_manual_pwa_runner_publishes_results_and_can_run_again(
 
 
 def test_manual_pwa_identity_failure_does_not_discard_other_players(monkeypatch):
-    def resolve(username):
-        if username == "Missing":
-            raise LookupError("not found")
-        return {
-            "username": username,
-            "steamid": "76561198000000001",
-            "domain": "alpha-domain",
-        }
+    from perfectworld_experiment.pwa_client import PerfectWorldPlayer
 
-    monkeypatch.setattr(web_server.api_client, "resolve_player_identity", resolve)
+    class FakePerfectClient:
+        def __init__(self, account_steamid, access_token):
+            assert account_steamid == "76561198000000000"
+            assert access_token == "session-secret"
+
+        def resolve_player(self, username):
+            if username == "Missing":
+                raise LookupError("not found")
+            return PerfectWorldPlayer(
+                "1001", "76561198000000001", username
+            )
+
+    monkeypatch.setattr(
+        "perfectworld_experiment.pwa_client.PerfectWorldClient",
+        FakePerfectClient,
+    )
     players, failed = web_server._resolve_pwa_manual_players(
-        ["Alpha", "Missing"], SimpleNamespace(current_match=None)
+        ["Alpha", "Missing"],
+        SimpleNamespace(
+            current_match=None,
+            session=SimpleNamespace(
+                account_steamid="76561198000000000",
+                access_token="session-secret",
+            ),
+        ),
     )
 
     assert [player.nickname for player in players] == ["Alpha"]
     assert failed == [{
         "username": "Missing",
-        "reason": "未找到玩家或无法解析 SteamID",
+        "reason": "未找到完美平台玩家，请检查用户名或改用 SteamID64",
+    }]
+
+
+def test_manual_pwa_identity_preserves_safe_ambiguity_message(monkeypatch):
+    from perfectworld_experiment.pwa_client import PerfectWorldLookupError
+
+    class AmbiguousPerfectClient:
+        def __init__(self, account_steamid, access_token):
+            pass
+
+        def resolve_player(self, username):
+            raise PerfectWorldLookupError("完美平台用户名不唯一，请改用 SteamID64")
+
+    monkeypatch.setattr(
+        "perfectworld_experiment.pwa_client.PerfectWorldClient",
+        AmbiguousPerfectClient,
+    )
+    players, failed = web_server._resolve_pwa_manual_players(
+        ["同名玩家"],
+        SimpleNamespace(
+            current_match=None,
+            session=SimpleNamespace(
+                account_steamid="76561198000000000",
+                access_token="session-secret",
+            ),
+        ),
+    )
+
+    assert players == []
+    assert failed == [{
+        "username": "同名玩家",
+        "reason": "完美平台用户名不唯一，请改用 SteamID64",
     }]
 
 

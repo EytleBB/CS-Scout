@@ -67,6 +67,19 @@ class HistorySession:
         )
 
 
+class PlayerSearchSession:
+    def __init__(self, users):
+        self.users = users
+        self.request = None
+
+    def post(self, url, **kwargs):
+        self.request = (url, kwargs)
+        return FakeResponse({
+            "code": 0,
+            "data": {"users": self.users, "total": len(self.users)},
+        })
+
+
 @dataclass
 class Metadata:
     match_id: str
@@ -182,6 +195,81 @@ def test_resolve_players_uses_account_session_and_keeps_roster_order(monkeypatch
     assert url == "https://pwa-account.wmpvp.com/user/playersInfo"
     assert request["headers"]["Pwa-Jt"] == "session-jt"
     assert request["headers"]["PwaSteamId"] == "76561198000000000"
+
+
+def test_resolve_player_uses_perfect_search_and_exact_chinese_nickname(monkeypatch):
+    session = PlayerSearchSession([
+        {
+            "steam_id": "76561198123456789",
+            "zq_id": "1001",
+            "nickname": "深渊之王",
+        },
+        {
+            "steam_id": "76561198987654321",
+            "zq_id": "1002",
+            "nickname": "深渊之王2",
+        },
+    ])
+    monkeypatch.setattr(
+        "perfectworld_experiment.pwa_client.build_signature_params",
+        lambda body: {"signed": "yes"},
+    )
+    client = PerfectWorldClient(
+        "76561198000000000",
+        "access-secret",
+        session=session,
+    )
+
+    player = client.resolve_player("深渊之王")
+
+    assert player.player_id == "1001"
+    assert player.steamid == "76561198123456789"
+    assert player.nickname == "深渊之王"
+    url, request = session.request
+    assert url == "https://pwaweblogin.wmpvp.com/api-user/search"
+    assert __import__("json").loads(request["data"])["keyword"] == "深渊之王"
+    assert request["params"] == {"signed": "yes"}
+    assert request["headers"]["PwaSteamId"] == "76561198000000000"
+
+
+def test_resolve_player_rejects_ambiguous_nickname(monkeypatch):
+    monkeypatch.setattr(
+        "perfectworld_experiment.pwa_client.build_signature_params",
+        lambda body: {"signed": "yes"},
+    )
+    session = PlayerSearchSession([
+        {"steam_id": "76561198123456789", "zq_id": "1001", "nickname": "同名"},
+        {"steam_id": "76561198987654321", "zq_id": "1002", "nickname": "同名"},
+    ])
+    client = PerfectWorldClient(
+        "76561198000000000",
+        "access-secret",
+        session=session,
+    )
+
+    with pytest.raises(RuntimeError, match="SteamID64"):
+        client.resolve_player("同名")
+
+
+def test_resolve_player_keeps_steamid64_support(monkeypatch):
+    monkeypatch.setattr(
+        "perfectworld_experiment.pwa_client.build_signature_params",
+        lambda body: {"signed": "yes"},
+    )
+    steamid = "76561198123456789"
+    session = PlayerSearchSession([
+        {"steam_id": steamid, "zq_id": "1001", "nickname": "中文昵称"},
+    ])
+    client = PerfectWorldClient(
+        "76561198000000000",
+        "access-secret",
+        session=session,
+    )
+
+    player = client.resolve_player(steamid)
+
+    assert player.steamid == steamid
+    assert player.nickname == "中文昵称"
 
 
 def test_discover_can_query_an_opponent_with_the_logged_in_account():

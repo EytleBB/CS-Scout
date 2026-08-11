@@ -8,8 +8,6 @@
 
 - Windows 10 或 Windows 11，64 位系统。
 - 建议至少保留 16 GB 可用磁盘空间；Demo 会保存在本机并占用较多空间。
-- 安装 64 位 Python 3.11 或 3.12：<https://www.python.org/downloads/windows/>。
-  安装 Python 时建议保留 **Python Launcher** 选项。
 - 安装和分析 Demo 都需要联网。
 - 使用 5E 自动侦察前，需要已经安装并登录官方 5E 客户端；CS-Scout 只负责启动和监听，
   不能替你安装或登录 5E。
@@ -18,14 +16,14 @@
 ## 二、下载和安装
 
 1. 在 GitHub Releases 页面下载
-   `CS-Scout-Windows-x64-v2.1.1-alpha.2.zip` Windows 发布包。
+   `CS-Scout-Windows-x64-v2.1.1-alpha.3.zip` Windows 发布包。
 2. 同时下载 `SHA256SUMS.txt`，在 ZIP 所在目录运行
-   `Get-FileHash -Algorithm SHA256 .\CS-Scout-Windows-x64-v2.1.1-alpha.2.zip`，确认结果与
+   `Get-FileHash -Algorithm SHA256 .\CS-Scout-Windows-x64-v2.1.1-alpha.3.zip`，确认结果与
    校验文件中的 64 位散列完全相同；不同就不要运行。
 3. 不要下载 GitHub 自动生成的 `Source code (zip)` 或 `Source code (tar.gz)`；它们可能不含雷达地图。
 4. 右键 ZIP，选择“全部解压”。不要直接在压缩包预览窗口里运行程序。
 5. 打开解压后的 `windows` 文件夹，双击 `Install-CS-Scout.cmd`。
-6. 第一次安装需要下载 Python 依赖，通常需要几分钟。看到
+6. 第一次安装会自动准备 Python 并下载运行依赖，通常需要几分钟。看到
    `Installation completed successfully` 表示完成。
 
 请普通双击运行，不要选择“以管理员身份运行”；否则数据会进入错误的 Windows 用户目录。
@@ -33,6 +31,9 @@
 安装程序不会请求管理员权限，也不会修改系统防火墙。它会：
 
 - 在发布包内创建独立的 `.venv` Python 环境；
+- 如果电脑没有可用的 64 位 Python 3.11/3.12，会从 python.org 下载经过固定哈希和官方签名
+  校验的 Python 3.12.10，并仅安装到 `%LOCALAPPDATA%\CS-Scout\runtime`；
+- 不会卸载现有 Python 3.13，不会修改 PATH，也不依赖 PyCharm 的解释器设置；
 - 在 `%LOCALAPPDATA%\CS-Scout` 创建运行数据目录。
 
 ## 三、启动
@@ -66,6 +67,7 @@
 ├─ demos\        已下载的 Demo 缓存
 ├─ output\       最近的 5E 分析 JSON
 ├─ perfectworld\ 完美平台 Demo 缓存与分析 JSON
+├─ runtime\      缺少兼容 Python 时自动准备的私有运行环境
 ├─ pwa-install.json    上次选择的完美平台安装目录
 └─ fivee-install.json  上次选择的 5E 客户端位置
 ```
@@ -84,11 +86,11 @@ Demo 缓存和输出位于 `%LOCALAPPDATA%\CS-Scout`，不会因为更换发布�
 
 ## 六、常见问题
 
-### 提示找不到 Python 3.11 或 3.12
+### 电脑只有 Python 3.13，或 Python 只在 PyCharm 里可见
 
-安装 Python 3.11/3.12 64 位版本，然后重新运行安装脚本。如果 Windows 跳转到 Microsoft
-Store，请在 Windows“管理应用执行别名”中关闭 `python.exe` 的商店别名，或重新安装
-python.org 提供的版本并保留 Python Launcher。
+不需要调整现有 Python 或 PyCharm。重新运行 `Install-CS-Scout.cmd`，安装程序会为 CS-Scout
+自动准备独立的 Python 3.12.10。若下载失败，请检查能否访问 `python.org`、代理或安全软件，
+然后直接重试；已有 Python 3.13 不会被删除或替换。
 
 ### 其他程序正在使用 5000 端口
 
@@ -134,5 +136,6 @@ CS-Scout 会自动检查官方数字签名和版本并记住该目录，不需�
 
 ## 七、卸载
 
-先停止 CS-Scout，然后删除解压出来的发布包目录即可删除程序。如果还要彻底删除 Demo
-和分析结果，再手动删除 `%LOCALAPPDATA%\CS-Scout`。此操作无法恢复，请先确认没有需要保留的数据。
+先停止 CS-Scout，然后删除解压出来的发布包目录即可删除主程序。如果还要删除自动准备的
+Python、Demo 和分析结果，再手动删除 `%LOCALAPPDATA%\CS-Scout`。此操作无法恢复，请先确认
+没有需要保留的数据。

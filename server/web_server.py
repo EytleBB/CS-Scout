@@ -908,7 +908,10 @@ def serve_icons(filename):
 def _resolve_pwa_manual_players(usernames, local_state):
     """Resolve manual names without exposing the Perfect World session token."""
     from perfectworld_experiment.auto_scout import resolve_roster
-    from perfectworld_experiment.pwa_client import PerfectWorldPlayer
+    from perfectworld_experiment.pwa_client import (
+        PerfectWorldClient,
+        PerfectWorldLookupError,
+    )
 
     roster_by_name = {}
     if local_state.current_match is not None:
@@ -920,11 +923,14 @@ def _resolve_pwa_manual_players(usernames, local_state):
                 exc_info=True,
             )
         else:
-            roster_by_name = {
-                player.nickname.casefold(): player
-                for player in roster
-                if player.nickname.strip()
-            }
+            for player in roster:
+                key = player.nickname.strip().casefold()
+                if not key:
+                    continue
+                if key in roster_by_name:
+                    roster_by_name[key] = None
+                else:
+                    roster_by_name[key] = player
 
     resolved = [None] * len(usernames)
     failures = [None] * len(usernames)
@@ -936,30 +942,45 @@ def _resolve_pwa_manual_players(usernames, local_state):
         else:
             unresolved[index] = username
 
-    if unresolved:
+    if unresolved and local_state.session is not None:
+        session = local_state.session
+
+        def resolve_perfect_identity(username):
+            return PerfectWorldClient(
+                session.account_steamid,
+                session.access_token,
+            ).resolve_player(username)
+
         with ThreadPoolExecutor(
             max_workers=min(5, len(unresolved)),
             thread_name_prefix="pwa-manual-identity",
         ) as pool:
             futures = {
-                pool.submit(api_client.resolve_player_identity, username): index
+                pool.submit(resolve_perfect_identity, username): index
                 for index, username in unresolved.items()
             }
             for future in as_completed(futures):
                 index = futures[future]
                 try:
                     identity = future.result()
+                except PerfectWorldLookupError as exc:
+                    failures[index] = {
+                        "username": usernames[index],
+                        "reason": str(exc),
+                    }
                 except Exception:
                     failures[index] = {
                         "username": usernames[index],
-                        "reason": "未找到玩家或无法解析 SteamID",
+                        "reason": "未找到完美平台玩家，请检查用户名或改用 SteamID64",
                     }
                 else:
-                    resolved[index] = PerfectWorldPlayer(
-                        identity["steamid"],
-                        identity["steamid"],
-                        identity["username"],
-                    )
+                    resolved[index] = identity
+    elif unresolved:
+        for index in unresolved:
+            failures[index] = {
+                "username": usernames[index],
+                "reason": "尚未检测到完美平台登录会话",
+            }
     return (
         [player for player in resolved if player is not None],
         [failure for failure in failures if failure is not None],

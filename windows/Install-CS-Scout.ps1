@@ -5,6 +5,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ManagedVenvMarkerName = ".cs-scout-managed-venv"
 $ManagedVenvMarkerContents = "CS-Scout managed virtual environment v1"
+$ManagedPythonVersion = "3.12.10"
+$ManagedPythonInstallerUrl = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe"
+$ManagedPythonInstallerSha256 = "67B5635E80EA51072B87941312D00EC8927C4DB9BA18938F7AD2D27B328B95FB"
 
 function Write-Step([string]$Message) {
     Write-Host "`n==> $Message" -ForegroundColor Cyan
@@ -213,33 +216,148 @@ function Test-SupportedPythonInfo($Info) {
     return $null -ne $Info -and $Info.Version -in @("3.11", "3.12") -and $Info.Bits -eq 64
 }
 
-function Find-SupportedPython {
+function Get-SupportedPythonCandidate([string]$Command, [string[]]$Prefix) {
+    if ([System.IO.Path]::IsPathRooted($Command)) {
+        if (-not (Test-Path -LiteralPath $Command -PathType Leaf)) {
+            return $null
+        }
+    }
+    elseif (-not (Get-Command $Command -ErrorAction SilentlyContinue)) {
+        return $null
+    }
+    $info = Get-PythonInfo $Command @($Prefix)
+    if (-not (Test-SupportedPythonInfo $info)) {
+        return $null
+    }
+    return [pscustomobject]@{
+        Command = $Command
+        Prefix = @($Prefix)
+        Version = $info.Version
+        Bits = $info.Bits
+        Executable = $info.Executable
+    }
+}
+
+function Install-ManagedPython([string]$LocalState) {
+    $runtimeRoot = Join-Path $LocalState "runtime"
+    $pythonRoot = Join-Path $runtimeRoot "python-$ManagedPythonVersion"
+    $pythonExe = Join-Path $pythonRoot "python.exe"
+    $downloadRoot = Join-Path $LocalState "downloads"
+    $installerPath = Join-Path $downloadRoot "python-$ManagedPythonVersion-amd64.exe"
+
+    foreach ($directory in @($runtimeRoot, $downloadRoot)) {
+        if (Test-Path -LiteralPath $directory) {
+            $item = Get-Item -LiteralPath $directory -Force
+            if (-not $item.PSIsContainer -or
+                ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "The managed Python path is not an ordinary directory: $directory"
+            }
+        }
+        else {
+            [void](New-Item -ItemType Directory -Path $directory)
+        }
+    }
+
+    $existing = Get-SupportedPythonCandidate $pythonExe @()
+    if ($null -ne $existing) {
+        return $existing
+    }
+
+    Write-Host "No compatible Python was found. Downloading the official Python $ManagedPythonVersion runtime..." -ForegroundColor Yellow
+    $temporaryPath = Join-Path $downloadRoot ("python-download-" + [guid]::NewGuid().ToString("N") + ".tmp")
+    try {
+        $downloaded = $false
+        for ($attempt = 1; $attempt -le 3 -and -not $downloaded; $attempt++) {
+            try {
+                Invoke-WebRequest `
+                    -Uri $ManagedPythonInstallerUrl `
+                    -OutFile $temporaryPath `
+                    -TimeoutSec 180 `
+                    -UseBasicParsing
+                $downloaded = $true
+            }
+            catch {
+                if (Test-Path -LiteralPath $temporaryPath) {
+                    Remove-Item -LiteralPath $temporaryPath -Force
+                }
+                if ($attempt -ge 3) {
+                    throw "Could not download the official Python runtime from python.org. Check the network or proxy and run the installer again."
+                }
+                Start-Sleep -Seconds 2
+            }
+        }
+
+        $actualHash = (Get-FileHash -LiteralPath $temporaryPath -Algorithm SHA256).Hash
+        if (-not [string]::Equals(
+            $actualHash,
+            $ManagedPythonInstallerSha256,
+            [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+            throw "The downloaded Python runtime failed its SHA-256 integrity check."
+        }
+        Move-Item -LiteralPath $temporaryPath -Destination $installerPath -Force
+
+        $signature = Get-AuthenticodeSignature -LiteralPath $installerPath
+        if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
+            $null -eq $signature.SignerCertificate -or
+            $signature.SignerCertificate.Subject -notmatch "Python Software Foundation") {
+            throw "The downloaded Python runtime is not signed by the Python Software Foundation."
+        }
+
+        Write-Host "Installing the private Python $ManagedPythonVersion runtime for CS-Scout..."
+        $installArguments = @(
+            "/quiet",
+            "InstallAllUsers=0",
+            "TargetDir=`"$pythonRoot`"",
+            "Include_pip=1",
+            "Include_launcher=0",
+            "AssociateFiles=0",
+            "Shortcuts=0",
+            "Include_doc=0",
+            "Include_test=0",
+            "Include_tcltk=0",
+            "PrependPath=0",
+            "AppendPath=0"
+        )
+        $installer = Start-Process `
+            -FilePath $installerPath `
+            -ArgumentList $installArguments `
+            -Wait `
+            -PassThru
+        if ($installer.ExitCode -ne 0) {
+            throw "The official Python runtime installer failed (exit code $($installer.ExitCode))."
+        }
+        $installed = Get-SupportedPythonCandidate $pythonExe @()
+        if ($null -eq $installed -or $installed.Version -ne "3.12") {
+            throw "The managed Python runtime did not pass its 64-bit Python 3.12 check."
+        }
+        Remove-Item -LiteralPath $installerPath -Force
+        return $installed
+    }
+    finally {
+        if (Test-Path -LiteralPath $temporaryPath) {
+            Remove-Item -LiteralPath $temporaryPath -Force
+        }
+    }
+}
+
+function Find-SupportedPython([string]$LocalState) {
+    $managedPython = Join-Path $LocalState "runtime\python-$ManagedPythonVersion\python.exe"
     $candidates = @(
+        [pscustomobject]@{ Command = $managedPython; Prefix = @() },
+        [pscustomobject]@{ Command = (Join-Path $env:LOCALAPPDATA "Programs\Python\Python312\python.exe"); Prefix = @() },
+        [pscustomobject]@{ Command = (Join-Path $env:LOCALAPPDATA "Programs\Python\Python311\python.exe"); Prefix = @() },
         [pscustomobject]@{ Command = "py.exe"; Prefix = @("-3.12") },
         [pscustomobject]@{ Command = "py.exe"; Prefix = @("-3.11") },
         [pscustomobject]@{ Command = "python.exe"; Prefix = @() }
     )
     foreach ($candidate in $candidates) {
-        if (-not (Get-Command $candidate.Command -ErrorAction SilentlyContinue)) {
-            continue
-        }
-        $info = Get-PythonInfo $candidate.Command @($candidate.Prefix)
-        if (Test-SupportedPythonInfo $info) {
-            return [pscustomobject]@{
-                Command = $candidate.Command
-                Prefix = @($candidate.Prefix)
-                Version = $info.Version
-                Bits = $info.Bits
-                Executable = $info.Executable
-            }
+        $python = Get-SupportedPythonCandidate $candidate.Command @($candidate.Prefix)
+        if ($null -ne $python) {
+            return $python
         }
     }
-
-    throw @"
-64-bit Python 3.11 or 3.12 was not found.
-Install 64-bit Python from https://www.python.org/downloads/windows/ and run this installer again.
-Keep the Python Launcher option enabled during Python installation.
-"@
+    return Install-ManagedPython $LocalState
 }
 
 function Test-ManagedVenv([string]$Path) {
@@ -311,7 +429,7 @@ try {
         [void](New-Item -ItemType Directory -Path $directory -Force)
     }
 
-    Write-Step "Preparing 64-bit Python 3.11/3.12"
+    Write-Step "Preparing Python"
     $venvInfo = $null
     if (Test-Path -LiteralPath $venvDir) {
         $venvItem = Get-Item -LiteralPath $venvDir -Force
@@ -336,7 +454,7 @@ try {
     }
 
     if ($null -eq $venvInfo) {
-        $python = Find-SupportedPython
+        $python = Find-SupportedPython $localState
         Write-Host "Using $($python.Bits)-bit Python $($python.Version): $($python.Executable)"
         $venvArguments = @($python.Prefix) + @("-m", "venv", $venvDir)
         try {

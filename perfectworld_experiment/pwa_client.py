@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import re
+import unicodedata
 from typing import Any, Callable, Iterable, Mapping
 
 import requests
@@ -119,6 +120,10 @@ def _records(payload: object) -> list[Mapping[str, object]]:
     return [row for row in candidate if isinstance(row, Mapping)]
 
 
+def _identity_key(value: object) -> str:
+    return unicodedata.normalize("NFKC", str(value).strip()).casefold()
+
+
 class PerfectWorldClient:
     """Fetch demo descriptors without the former third-party downloader."""
 
@@ -139,6 +144,74 @@ class PerfectWorldClient:
         self._detail_cache: dict[
             str, tuple[str | None, int | str | None, bool] | None
         ] = {}
+
+    def resolve_player(self, identity: str) -> PerfectWorldPlayer:
+        """Resolve an exact Perfect World nickname or SteamID64.
+
+        The desktop client uses the signed ``/api-user/search`` request for its
+        own friend/player search.  Keeping this lookup on the Perfect World
+        session avoids accidentally resolving a same-named 5E account.
+        """
+        value = str(identity).strip()
+        if not value or len(value) > 128 or any(
+            ord(char) < 32 or ord(char) == 127 for char in value
+        ):
+            raise ValueError("完美平台用户名或 SteamID 无效")
+
+        body = json.dumps(
+            {"keyword": value, "page": 1},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        headers = build_api_headers(self.steamid, self._access_token)
+        headers["Content-Type"] = "application/json;charset=UTF-8"
+        try:
+            response = self._session.post(
+                WEB_API_BASE + "/api-user/search",
+                params=build_signature_params(body),
+                headers=headers,
+                data=body.encode("utf-8"),
+                timeout=(10, 20),
+            )
+            response.raise_for_status()
+            envelope = response.json()
+            if not isinstance(envelope, Mapping) or int(envelope.get("code", -1)) != 0:
+                raise PerfectWorldLookupError("完美平台拒绝了玩家查询")
+            payload = decode_api_payload(envelope)
+        except PerfectWorldLookupError:
+            raise
+        except (requests.RequestException, ValueError) as exc:
+            raise PerfectWorldLookupError("完美平台玩家查询失败") from exc
+
+        users = payload.get("users") if isinstance(payload, Mapping) else None
+        if not isinstance(users, list):
+            raise PerfectWorldLookupError("完美平台玩家查询响应格式异常")
+
+        wanted_steamid = value if STEAM_ID_RE.fullmatch(value) else None
+        wanted_name = _identity_key(value)
+        matches: dict[str, PerfectWorldPlayer] = {}
+        for row in users:
+            if not isinstance(row, Mapping):
+                continue
+            try:
+                steamid = validate_steamid(str(row.get("steam_id") or ""))
+            except ValueError:
+                continue
+            nickname = str(row.get("nickname") or "").strip() or steamid
+            if wanted_steamid:
+                exact = steamid == wanted_steamid
+            else:
+                exact = _identity_key(nickname) == wanted_name
+            if not exact:
+                continue
+            player_id = str(row.get("zq_id") or steamid).strip() or steamid
+            matches[steamid] = PerfectWorldPlayer(player_id, steamid, nickname)
+
+        if not matches:
+            raise PerfectWorldLookupError("未找到该完美平台玩家")
+        if len(matches) != 1:
+            raise PerfectWorldLookupError("完美平台用户名不唯一，请改用 SteamID64")
+        return next(iter(matches.values()))
 
     def _fetch_metadata(self, target_steamid: str, access_token: str, *, size: int) -> list[_Metadata]:
         params = build_signed_params(

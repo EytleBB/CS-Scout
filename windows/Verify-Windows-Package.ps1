@@ -258,6 +258,24 @@ Assert-True ($installScript -match 'Remove-SafeVenv \$projectRoot \$venvDir') "I
 Assert-True ($installScript -match 'if \(\$null -eq \$venvInfo\)') "Installer must handle a failed venv probe without calling Trim on null."
 Assert-True ($installScript -match '\$env:PYTHONUTF8\s*=\s*"1"') "Installer must force UTF-8 Python output for non-ASCII extraction paths."
 Assert-True ($installScript -match '\$env:PYTHONIOENCODING\s*=\s*"utf-8"') "Installer must force UTF-8 pip output for non-ASCII extraction paths."
+Assert-True ($installScript -match 'https://www\.python\.org/ftp/python/3\.12\.10/python-3\.12\.10-amd64\.exe') `
+    "Installer must bootstrap Python only from the pinned official URL."
+Assert-True ($installScript -match '67B5635E80EA51072B87941312D00EC8927C4DB9BA18938F7AD2D27B328B95FB') `
+    "Installer must pin the official Python installer SHA-256."
+Assert-True ($installScript -match 'Get-FileHash.*SHA256') `
+    "Installer must verify the managed Python download hash."
+Assert-True ($installScript -match 'Get-AuthenticodeSignature') `
+    "Installer must verify the managed Python Authenticode signature."
+Assert-True ($installScript -match 'Python Software Foundation') `
+    "Installer must require the Python Software Foundation signer."
+Assert-True ($installScript -match 'InstallAllUsers=0') `
+    "Managed Python must install only for the current Windows user."
+Assert-True ($installScript -match 'PrependPath=0') `
+    "Managed Python must not modify the player's PATH."
+Assert-True ($installScript -match 'Include_launcher=0') `
+    "Managed Python must not replace the player's Python launcher."
+Assert-True ($installScript -match 'function Install-ManagedPython') `
+    "Installer must provide automatic Python preparation."
 Assert-True ($installScript -match '\.cs-scout-managed-venv') "Installer must use a dedicated managed-venv marker."
 Assert-True ($installScript -match 'function Test-ManagedVenv') "Installer must validate its managed-venv marker."
 Assert-True ($installScript -match 'if \(-not \(Test-ManagedVenv \$actual\)\)') "Venv cleanup must require the managed marker."
