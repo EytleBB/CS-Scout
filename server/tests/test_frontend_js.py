@@ -828,9 +828,9 @@ global.fetch = async (url, options) => {{
     assert result.returncode == 0, result.stderr or result.stdout
 
 
-def test_app_button_views_keep_one_panel_active_and_draw_only_it():
+def test_app_button_views_reset_and_replay_when_switching_players():
     script = f"""
-const {{ registerReplayView, drawAll }} = require({json.dumps(os.path.abspath(APP_JS))});
+const {{ registerReplayView, drawAll, wireControls }} = require({json.dumps(os.path.abspath(APP_JS))});
 
 function element(id = "") {{
   const classes = new Set();
@@ -851,21 +851,33 @@ const switcher = element("view-switcher");
 const toolbar = element("view-toolbar");
 toolbar.hidden = true;
 const empty = element("empty-state");
+const scrub = element("scrub");
+scrub.value = "0";
+const timeLabel = element("timelbl");
+const playPause = element("playpause");
 global.document = {{
+  activeElement: null,
+  body: {{ dataset: {{ localAnalysis: "false" }} }},
   querySelector(selector) {{
     if (selector === "#view-switcher") return switcher;
     if (selector === "#view-toolbar") return toolbar;
     if (selector === "#empty-state") return empty;
+    if (selector === "#scrub") return scrub;
+    if (selector === "#timelbl") return timeLabel;
+    if (selector === "#playpause") return playPause;
     return null;
   }},
+  querySelectorAll() {{ return []; }},
+  addEventListener() {{}},
   createElement() {{ return element(); }}
 }};
 
 const panels = Array.from({{length: 6}}, (_, index) =>
   element(index === 0 ? "pistol" : `buy-${{index}}`));
-const draws = [0, 0, 0, 0, 0, 0];
-const players = draws.map((_, index) => ({{ drawAt() {{ draws[index] += 1; }} }}));
+const draws = [[], [], [], [], [], []];
+const players = draws.map((_, index) => ({{ drawAt(time) {{ draws[index].push(time); }} }}));
 
+wireControls();
 registerReplayView("pistol", "手枪局（全员）", panels[0], players[0], "#5d86ff");
 registerReplayView("buy:one", "一号", panels[1], players[1], "#ef6aa8", "一号 购买局");
 if (switcher.children.length !== 2) throw new Error("initial buttons were not registered");
@@ -875,11 +887,25 @@ if (switcher.children[1].textContent !== "一号" ||
 }}
 if (panels[0].hidden || !panels[1].hidden) throw new Error("pistol was not the initial view");
 
+scrub.listeners.input({{ target: {{ value: "750" }} }});
+if (timeLabel.textContent !== "15.0 / 20.0s" || playPause.textContent !== "▶") {{
+  throw new Error("test playback did not move to a paused nonzero time");
+}}
 switcher.children[1].listeners.click();
 if (!panels[0].hidden || panels[1].hidden) throw new Error("Buy view did not activate");
 if (switcher.children[0].attributes["aria-pressed"] !== "false" ||
     switcher.children[1].attributes["aria-pressed"] !== "true") {{
   throw new Error("button pressed state is inconsistent");
+}}
+if (scrub.value !== "0" || timeLabel.textContent !== "0.0 / 20.0s" ||
+    playPause.textContent !== "⏸" || draws[1][draws[1].length - 1] !== 0) {{
+  throw new Error("switching players did not restart playback from zero");
+}}
+
+scrub.listeners.input({{ target: {{ value: "500" }} }});
+switcher.children[1].listeners.click();
+if (timeLabel.textContent !== "10.0 / 20.0s" || playPause.textContent !== "▶") {{
+  throw new Error("clicking the already active player unexpectedly restarted playback");
 }}
 
 for (let index = 2; index <= 5; index += 1) {{
@@ -892,10 +918,10 @@ if (panels[1].hidden || panels.slice(2).some(panel => !panel.hidden)) {{
 registerReplayView("buy:5", "重复", panels[5], players[5]);
 if (switcher.children.length !== 6) throw new Error("duplicate domain created another button");
 
-const before = [...draws];
+const before = draws.map(values => values.length);
 drawAll(7);
-if (draws[0] !== before[0] || draws[1] !== before[1] + 1 ||
-    draws.slice(2).some((value, index) => value !== before[index + 2])) {{
+if (draws[0].length !== before[0] || draws[1].length !== before[1] + 1 ||
+    draws.slice(2).some((values, index) => values.length !== before[index + 2])) {{
   throw new Error("hidden replay players were still drawn");
 }}
 if (!empty.hidden || switcher.hidden || toolbar.hidden) throw new Error("result navigation visibility is wrong");

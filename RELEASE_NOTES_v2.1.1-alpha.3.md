@@ -9,6 +9,7 @@
 - Windows 玩家不再需要预先安装 Python。没有可用的 64 位 Python 3.11/3.12 时，安装程序会自动准备私有 Python 3.12.10。
 - 自动下载只使用固定的 `python.org` 地址，并校验 SHA-256 和 Python Software Foundation 数字签名。
 - 已有 Python 3.13、PyCharm 解释器和系统 PATH 不会被修改；自动运行环境只供 CS-Scout 使用。
+- 点击另一名玩家的回放按钮时，时间轴会回到 0 秒并自动从头播放；重复点击当前玩家不会打断进度。
 
 ## Windows 下载与更新
 

@@ -898,12 +898,19 @@ function schedulePoll(epoch, delay = 2000) {
 
 function activateReplayView(viewKey) {
   if (!replayViews.has(viewKey)) return;
+  const changed = activeViewKey !== null && activeViewKey !== viewKey;
   activeViewKey = viewKey;
   for (const [key, view] of replayViews) {
     const active = key === viewKey;
     view.panel.hidden = !active;
     view.button.classList.toggle("active", active);
     view.button.setAttribute("aria-pressed", String(active));
+  }
+  if (changed) {
+    clock.elapsed = 0;
+    clock.playing = true;
+    clock.last = null;
+    updateClockControls();
   }
   drawAll();
 }
