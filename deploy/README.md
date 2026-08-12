@@ -194,7 +194,7 @@ time, so changing source files during a scan can mix two code versions.
 5. Atomically switch `current`, restart, and perform the HTTPS smoke check.
 
 ```bash
-NEW_RELEASE='/opt/cs-scout/releases/v2.1.1-alpha.3'
+NEW_RELEASE='/opt/cs-scout/releases/v2.1.1-alpha.4'
 sudo ln -s "${NEW_RELEASE}" /opt/cs-scout/current.next
 sudo mv -Tf /opt/cs-scout/current.next /opt/cs-scout/current
 sudo systemctl restart cs-scout.service

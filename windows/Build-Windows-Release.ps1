@@ -2,7 +2,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$Version = "2.1.1-alpha.3",
+    [string]$Version = "2.1.1-alpha.4",
     [string]$ProjectRoot = "",
     [string]$OutputDirectory = ""
 )
@@ -10,7 +10,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$ExpectedReleaseVersion = "2.1.1-alpha.3"
+$ExpectedReleaseVersion = "2.1.1-alpha.4"
 $ExpectedMaps = @(
     "de_ancient", "de_anubis", "de_dust2", "de_inferno",
     "de_mirage", "de_nuke", "de_overpass", "de_train"
@@ -352,7 +352,7 @@ function Assert-StagedRuntimeIntegrity([string]$PackageRoot, [string]$ArchiveNam
     }
 
     $powerShellFiles = @(Get-ChildItem -LiteralPath (Join-Path $PackageRoot "windows") -Filter "*.ps1" -File)
-    Assert-True ($powerShellFiles.Count -eq 3) "The staged Windows workflow must contain exactly three player-facing PowerShell scripts."
+    Assert-True ($powerShellFiles.Count -eq 4) "The staged Windows workflow must contain exactly four packaged PowerShell scripts."
     foreach ($scriptFile in $powerShellFiles) {
         $tokens = $null
         $parseErrors = $null
@@ -623,7 +623,7 @@ try {
     $requiredFiles = @(
         "LICENSE",
         "README.md",
-        "RELEASE_NOTES_v2.1.1-alpha.3.md",
+        "RELEASE_NOTES_v2.1.1-alpha.4.md",
         "SECURITY.md",
         "THIRD_PARTY_NOTICES.md",
         "windows\Install-CS-Scout.cmd",
@@ -631,6 +631,7 @@ try {
         "windows\README-PLAYER-ZH.md",
         "windows\Start-CS-Scout.cmd",
         "windows\Start-CS-Scout.ps1",
+        "windows\Windows-Privilege.ps1",
         "windows\Verify-Windows-Package.ps1",
         "server\api_client.py",
         "server\combat.py",

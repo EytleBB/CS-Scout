@@ -16,9 +16,9 @@
 ## 二、下载和安装
 
 1. 在 GitHub Releases 页面下载
-   `CS-Scout-Windows-x64-v2.1.1-alpha.3.zip` Windows 发布包。
+   `CS-Scout-Windows-x64-v2.1.1-alpha.4.zip` Windows 发布包。
 2. 同时下载 `SHA256SUMS.txt`，在 ZIP 所在目录运行
-   `Get-FileHash -Algorithm SHA256 .\CS-Scout-Windows-x64-v2.1.1-alpha.3.zip`，确认结果与
+   `Get-FileHash -Algorithm SHA256 .\CS-Scout-Windows-x64-v2.1.1-alpha.4.zip`，确认结果与
    校验文件中的 64 位散列完全相同；不同就不要运行。
 3. 不要下载 GitHub 自动生成的 `Source code (zip)` 或 `Source code (tar.gz)`；它们可能不含雷达地图。
 4. 右键 ZIP，选择“全部解压”。不要直接在压缩包预览窗口里运行程序。
@@ -26,7 +26,9 @@
 6. 第一次安装会自动准备 Python 并下载运行依赖，通常需要几分钟。看到
    `Installation completed successfully` 表示完成。
 
-请普通双击运行，不要选择“以管理员身份运行”；否则数据会进入错误的 Windows 用户目录。
+请普通双击运行，不要主动选择“以管理员身份运行”。如果电脑只有内置 `Administrator`
+账号，或系统关闭了 UAC/管理员审批模式，安装器会显示一条警告后继续，并始终把数据保存在
+当前登录账号自己的 `%LOCALAPPDATA%\CS-Scout`。
 
 安装程序不会请求管理员权限，也不会修改系统防火墙。它会：
 
@@ -104,8 +106,8 @@ Demo 缓存和输出位于 `%LOCALAPPDATA%\CS-Scout`，不会因为更换发布�
 ### 5E 显示“自动侦察暂不可用”
 
 最常见原因是 5E 已经以普通方式运行，没有开放本机监听端口。正常退出 5E，不要强制结束；
-保持 CS-Scout 运行并允许它重新启动 5E，或重新启动 CS-Scout。若仍不可用，直接切换到
-“手动”并输入用户名。
+保持 CS-Scout 运行，它会等待 1 秒后进行一次受控重启。为避免反复弹出权限确认，自动重启
+最多执行一次；若仍不可用，页面会明确提示重新选择 5E，或切换“手动”并输入用户名。
 
 如果 5E 安装在非默认目录，页面会显示“选择 5E”。点击后选中官方 `5EClient.exe`，CS-Scout
 会验证数字签名、保存位置并自动重试；不需要打开 PowerShell，也不需要配置环境变量。

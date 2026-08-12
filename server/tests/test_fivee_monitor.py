@@ -408,6 +408,101 @@ def test_running_client_without_cdp_stops_connecting_forever(monkeypatch):
     assert "CDP" in snapshot["last_error"]
 
 
+def test_running_client_relaunches_once_after_user_exits(monkeypatch):
+    launched = []
+    running_states = iter((True, False, False))
+    service = fivee_monitor.FiveEAutoScoutService(
+        auto_launch=True, cdp_port=9222, websocket_module=object()
+    )
+    monkeypatch.setattr(service, "_cdp_targets", lambda: [])
+    monkeypatch.setattr(
+        fivee_monitor, "is_5e_running", lambda: next(running_states)
+    )
+    monkeypatch.setattr(fivee_monitor, "locate_5e_executable", lambda: {
+        "found": True,
+        "path": r"D:\\Games\\5E\\5EClient.exe",
+        "source": "saved",
+        "message": "ready",
+    })
+    monkeypatch.setattr(fivee_monitor, "_loopback_port_in_use", lambda _port: False)
+    monkeypatch.setattr(
+        fivee_monitor, "launch_5e_with_cdp",
+        lambda executable, port: launched.append((executable, port)),
+    )
+
+    service._supervisor_iteration()
+    assert service.snapshot()["connection_code"] == "client_running_without_cdp"
+
+    service._supervisor_iteration()
+    assert launched == []
+    assert service.snapshot()["connection_code"] == "relaunch_pending"
+
+    service._next_launch_attempt = 0.0
+    service._supervisor_iteration()
+    assert launched == [(r"D:\\Games\\5E\\5EClient.exe", 9222)]
+    assert service.snapshot()["connection_code"] == "launching"
+
+
+def test_failed_controlled_relaunch_does_not_loop(monkeypatch):
+    launched = []
+    running_states = iter((True, False, False, True, False))
+    service = fivee_monitor.FiveEAutoScoutService(
+        auto_launch=True, cdp_port=9222, websocket_module=object()
+    )
+    monkeypatch.setattr(service, "_cdp_targets", lambda: [])
+    monkeypatch.setattr(
+        fivee_monitor, "is_5e_running", lambda: next(running_states)
+    )
+    monkeypatch.setattr(fivee_monitor, "locate_5e_executable", lambda: {
+        "found": True,
+        "path": r"D:\\Games\\5E\\5EClient.exe",
+        "source": "saved",
+        "message": "ready",
+    })
+    monkeypatch.setattr(fivee_monitor, "_loopback_port_in_use", lambda _port: False)
+    monkeypatch.setattr(
+        fivee_monitor, "launch_5e_with_cdp",
+        lambda executable, port: launched.append((executable, port)),
+    )
+
+    service._supervisor_iteration()
+    service._supervisor_iteration()
+    service._next_launch_attempt = 0.0
+    service._supervisor_iteration()
+    assert len(launched) == 1
+
+    service._launch_started_at = fivee_monitor.time.monotonic() - (
+        fivee_monitor.CLIENT_LAUNCH_TIMEOUT + 1
+    )
+    service._supervisor_iteration()
+    assert service.snapshot()["connection_code"] == "client_running_without_cdp"
+    service._supervisor_iteration()
+
+    snapshot = service.snapshot()
+    assert len(launched) == 1
+    assert snapshot["connection_code"] == "relaunch_failed"
+    assert snapshot["manual_fallback"] is True
+
+
+def test_reentering_automatic_mode_resets_relaunch_limit():
+    service = fivee_monitor.FiveEAutoScoutService(
+        auto_launch=True, websocket_module=object()
+    )
+    with service._lock:
+        service._last_launch_failed = True
+        service._exit_relaunches = fivee_monitor.MAX_EXIT_RELAUNCHES
+        service._state.update({
+            "phase": "manual",
+            "client_running": False,
+            "connection_code": "relaunch_failed",
+        })
+
+    service.configure(max_demos=6, mode="normal")
+
+    assert service._last_launch_failed is False
+    assert service._exit_relaunches == 0
+
+
 @pytest.mark.parametrize("success", [False, True])
 def test_completed_analysis_keeps_confirmed_roster_for_retry(success):
     service = fivee_monitor.FiveEAutoScoutService(

@@ -3,6 +3,11 @@ param()
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$privilegeHelperPath = Join-Path $PSScriptRoot "Windows-Privilege.ps1"
+if (-not (Test-Path -LiteralPath $privilegeHelperPath -PathType Leaf)) {
+    throw "Release file is missing: windows\Windows-Privilege.ps1. Extract the complete Windows release ZIP first."
+}
+. $privilegeHelperPath
 $ManagedVenvMarkerName = ".cs-scout-managed-venv"
 $ManagedVenvMarkerContents = "CS-Scout managed virtual environment v1"
 $ManagedPythonVersion = "3.12.10"
@@ -398,12 +403,8 @@ function Remove-SafeVenv([string]$Root, [string]$Path) {
 }
 
 try {
-    $principal = [System.Security.Principal.WindowsPrincipal]::new(
-        [System.Security.Principal.WindowsIdentity]::GetCurrent()
-    )
-    if ($principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        throw "Do not run this installer as Administrator. Close this window and double-click Install-CS-Scout.cmd normally."
-    }
+    $privilegeState = Assert-CSScoutSupportedPrivilege `
+        -ElevatedMessage "Do not run this installer with 'Run as administrator'. Close this window and double-click Install-CS-Scout.cmd normally."
 
     $projectRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
     if (-not $env:LOCALAPPDATA) {
