@@ -35,6 +35,8 @@ log = logging.getLogger("fivee-monitor")
 DEFAULT_CDP_PORT = 9222
 CDP_RETRY_SECONDS = 2.0
 CLIENT_LAUNCH_TIMEOUT = 30.0
+CLIENT_RELAUNCH_DELAY = 1.0
+MAX_EXIT_RELAUNCHES = 1
 MATCH_RESOLVE_ATTEMPTS = 8
 MAX_FRAME_TEXT = 2 * 1024 * 1024
 MAX_ENCODED_FRAME = (MAX_FRAME_TEXT * 4 // 3) + 32
@@ -1320,6 +1322,8 @@ class FiveEAutoScoutService:
         self._last_launch_failed = False
         self._next_launch_attempt = 0.0
         self._client_was_running = False
+        self._waiting_for_client_exit = False
+        self._exit_relaunches = 0
         self._last_cdp_owned = False
         self._candidate_teams: dict[str, list[dict]] = {}
         self._state = {
@@ -1403,6 +1407,8 @@ class FiveEAutoScoutService:
                 if self._state.get("phase") in {"manual", "connecting"}:
                     self._last_launch_failed = False
                     self._next_launch_attempt = 0.0
+                    self._waiting_for_client_exit = False
+                    self._exit_relaunches = 0
                     if not self._state.get("client_running"):
                         self._launched_by_scout = False
                         self._launch_started_at = 0.0
@@ -1417,6 +1423,8 @@ class FiveEAutoScoutService:
                 self._launch_started_at = 0.0
                 self._last_launch_failed = False
                 self._next_launch_attempt = 0.0
+                self._waiting_for_client_exit = False
+                self._exit_relaunches = 0
                 self._state.update({
                     "phase": "connecting",
                     "message": "已选择 5E，正在准备自动启动…",
@@ -1639,6 +1647,10 @@ class FiveEAutoScoutService:
         if targets:
             now = time.monotonic()
             self._client_was_running = True
+            self._waiting_for_client_exit = False
+            self._exit_relaunches = 0
+            self._last_launch_failed = False
+            self._next_launch_attempt = 0.0
             if not self._targets_first_seen:
                 self._targets_first_seen = now
             self._start_target_workers(targets)
@@ -1669,6 +1681,10 @@ class FiveEAutoScoutService:
             listener_owned = self._last_cdp_owned
         if listener_owned:
             self._client_was_running = True
+            self._waiting_for_client_exit = False
+            self._exit_relaunches = 0
+            self._last_launch_failed = False
+            self._next_launch_attempt = 0.0
             self._connection_state(
                 phase="connecting",
                 message="已连接 5E，等待平台页面…",
@@ -1701,7 +1717,7 @@ class FiveEAutoScoutService:
                     launched_by_scout=True,
                 )
             else:
-                self._last_launch_failed = bool(self._launched_by_scout)
+                self._waiting_for_client_exit = True
                 self._connection_state(
                     phase="manual",
                     message=(
@@ -1732,12 +1748,18 @@ class FiveEAutoScoutService:
 
         if self._client_was_running:
             previously_launched = self._launched_by_scout
+            should_relaunch = self._waiting_for_client_exit or previously_launched
             self._client_was_running = False
+            self._waiting_for_client_exit = False
             self._launch_started_at = 0.0
             self._launched_by_scout = False
-            self._next_launch_attempt = 0.0
-            if previously_launched:
+            if should_relaunch and self._exit_relaunches < MAX_EXIT_RELAUNCHES:
+                self._exit_relaunches += 1
+                self._last_launch_failed = False
+                self._next_launch_attempt = now + CLIENT_RELAUNCH_DELAY
+            elif should_relaunch:
                 self._last_launch_failed = True
+                self._next_launch_attempt = 0.0
 
         if not self.auto_launch:
             self._connection_state(
@@ -1755,14 +1777,29 @@ class FiveEAutoScoutService:
         if self._last_launch_failed:
             self._connection_state(
                 phase="manual",
-                message="上次未能启动 5E，请重新选择程序或再次进入自动模式",
-                connection_code="previous_launch_failed",
-                last_error="Previous 5E launch failed",
+                message="5E 自动重启未成功，请重新选择 5E 或切换手动模式",
+                connection_code="relaunch_failed",
+                last_error="Controlled 5E relaunch did not enable CDP",
                 auto_available=False,
                 manual_fallback=True,
                 client_running=False,
                 cdp_listening=False,
                 needs_executable=True,
+            )
+            return
+
+        if self._next_launch_attempt and now < self._next_launch_attempt:
+            self._connection_state(
+                phase="connecting",
+                message="5E 已退出，正在准备重新启动…",
+                connection_code="relaunch_pending",
+                last_error="",
+                auto_available=False,
+                manual_fallback=False,
+                client_running=False,
+                cdp_listening=False,
+                launched_by_scout=False,
+                needs_executable=False,
             )
             return
 
@@ -1840,7 +1877,7 @@ class FiveEAutoScoutService:
         self._launched_by_scout = True
         self._launch_started_at = now
         self._last_launch_failed = False
-        self._next_launch_attempt = now + CLIENT_LAUNCH_TIMEOUT
+        self._next_launch_attempt = 0.0
         self._connection_state(
             phase="connecting",
             message="正在启动 5E，请确认 Windows 权限提示…",

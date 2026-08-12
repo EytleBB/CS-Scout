@@ -3,6 +3,11 @@ param()
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$privilegeHelperPath = Join-Path $PSScriptRoot "Windows-Privilege.ps1"
+if (-not (Test-Path -LiteralPath $privilegeHelperPath -PathType Leaf)) {
+    throw "Release file is missing: windows\Windows-Privilege.ps1. Extract the complete Windows release ZIP first."
+}
+. $privilegeHelperPath
 
 function New-RandomSecret {
     $bytes = New-Object byte[] 32
@@ -183,11 +188,9 @@ $startupInfoPath = $null
 $startupToken = $null
 $baseUri = $null
 try {
+    $privilegeState = Assert-CSScoutSupportedPrivilege `
+        -ElevatedMessage "Do not run CS-Scout with 'Run as administrator'. Close this window and double-click Start-CS-Scout.cmd normally."
     $windowsIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = [System.Security.Principal.WindowsPrincipal]::new($windowsIdentity)
-    if ($principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        throw "Do not run CS-Scout as Administrator. Start it by double-clicking Start-CS-Scout.cmd normally."
-    }
     if ($null -eq $windowsIdentity.User) {
         throw "The current Windows account has no security identifier."
     }

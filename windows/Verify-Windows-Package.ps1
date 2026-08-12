@@ -86,7 +86,7 @@ Assert-True ($PSVersionTable.PSVersion.Major -ge 5) "Use Windows PowerShell 5.1 
 $requiredWindowsFiles = @(
     "Install-CS-Scout.ps1", "Start-CS-Scout.ps1",
     "Install-CS-Scout.cmd", "Start-CS-Scout.cmd",
-    "README-PLAYER-ZH.md", "Verify-Windows-Package.ps1"
+    "README-PLAYER-ZH.md", "Windows-Privilege.ps1", "Verify-Windows-Package.ps1"
 )
 foreach ($fileName in $requiredWindowsFiles) {
     Assert-NonEmptyFile (Join-Path $windowsRoot $fileName) "windows\$fileName"
@@ -99,7 +99,10 @@ foreach ($fileName in @("Install-CS-Scout.cmd", "Start-CS-Scout.cmd")) {
     Assert-True ($wrapper -match '-ExecutionPolicy Bypass') "$fileName must launch its packaged script reliably."
 }
 
-foreach ($fileName in @("Install-CS-Scout.ps1", "Start-CS-Scout.ps1", "Verify-Windows-Package.ps1")) {
+foreach ($fileName in @(
+    "Install-CS-Scout.ps1", "Start-CS-Scout.ps1",
+    "Windows-Privilege.ps1", "Verify-Windows-Package.ps1"
+)) {
     $tokens = $null
     $errors = $null
     [void][System.Management.Automation.Language.Parser]::ParseFile(
@@ -171,6 +174,7 @@ foreach ($map in $maps) {
 
 $installScript = Get-Content -LiteralPath (Join-Path $windowsRoot "Install-CS-Scout.ps1") -Raw
 $startScript = Get-Content -LiteralPath (Join-Path $windowsRoot "Start-CS-Scout.ps1") -Raw
+$privilegeScript = Get-Content -LiteralPath (Join-Path $windowsRoot "Windows-Privilege.ps1") -Raw
 $configScript = Get-Content -LiteralPath (Join-Path $root "server\config.py") -Raw
 $webServerScript = Get-Content -LiteralPath (Join-Path $root "server\web_server.py") -Raw
 $appScript = Get-Content -LiteralPath (Join-Path $root "server\static\app.js") -Raw
@@ -208,6 +212,27 @@ Assert-True ($startScript -match 'CS_SCOUT_5E_CDP_PORT') `
     "Starter must pass the validated 5E CDP port to the local service."
 Assert-True ($startScript -match 'CS_SCOUT_5E_AUTO_LAUNCH') `
     "Starter must pass the 5E auto-launch preference to the local service."
+Assert-True ($installScript -match 'Windows-Privilege\.ps1') `
+    "Installer must use the shared Windows privilege classifier."
+Assert-True ($startScript -match 'Windows-Privilege\.ps1') `
+    "Starter must use the shared Windows privilege classifier."
+Assert-True ($privilegeScript -match 'GetTokenInformation') `
+    "Privilege classifier must inspect the Windows token elevation type."
+Assert-True ($privilegeScript -match '\-500\$') `
+    "Privilege classifier must recognize the built-in Administrator SID."
+. (Join-Path $windowsRoot "Windows-Privilege.ps1")
+Assert-True (-not (Test-CSScoutPrivilegeRequiresBlock `
+    -IsAdministrator $false -Sid "S-1-5-21-1-1001" -ElevationType "Limited")) `
+    "A standard or filtered user token must be accepted."
+Assert-True (Test-CSScoutPrivilegeRequiresBlock `
+    -IsAdministrator $true -Sid "S-1-5-21-1-1001" -ElevationType "Full") `
+    "An explicitly elevated regular administrator token must be blocked."
+Assert-True (-not (Test-CSScoutPrivilegeRequiresBlock `
+    -IsAdministrator $true -Sid "S-1-5-21-1-500" -ElevationType "Full")) `
+    "The built-in Administrator account must have a compatibility path."
+Assert-True (-not (Test-CSScoutPrivilegeRequiresBlock `
+    -IsAdministrator $true -Sid "S-1-5-21-1-1001" -ElevationType "Default")) `
+    "An always-elevated session with UAC disabled must have a compatibility path."
 Assert-True ($startScript -match 'CS_SCOUT_PWA_DEMO_DIR') `
     "Starter must place Perfect World Demo data outside the release directory."
 Assert-True ($startScript -match 'CS_SCOUT_PWA_OUTPUT_DIR') `
