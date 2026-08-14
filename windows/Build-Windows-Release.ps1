@@ -2,7 +2,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$Version = "2.1.1-alpha.4",
+    [string]$Version = "2.1.1",
     [string]$ProjectRoot = "",
     [string]$OutputDirectory = ""
 )
@@ -10,7 +10,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$ExpectedReleaseVersion = "2.1.1-alpha.4"
+$ExpectedReleaseVersion = "2.1.1"
 $ExpectedMaps = @(
     "de_ancient", "de_anubis", "de_dust2", "de_inferno",
     "de_mirage", "de_nuke", "de_overpass", "de_train"
@@ -623,7 +623,7 @@ try {
     $requiredFiles = @(
         "LICENSE",
         "README.md",
-        "RELEASE_NOTES_v2.1.1-alpha.4.md",
+        "RELEASE_NOTES_v2.1.1.md",
         "SECURITY.md",
         "THIRD_PARTY_NOTICES.md",
         "windows\Install-CS-Scout.cmd",
