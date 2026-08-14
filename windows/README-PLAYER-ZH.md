@@ -16,9 +16,9 @@
 ## 二、下载和安装
 
 1. 在 GitHub Releases 页面下载
-   `CS-Scout-Windows-x64-v2.1.1-alpha.4.zip` Windows 发布包。
+   `CS-Scout-Windows-x64-v2.1.1.zip` Windows 发布包。
 2. 同时下载 `SHA256SUMS.txt`，在 ZIP 所在目录运行
-   `Get-FileHash -Algorithm SHA256 .\CS-Scout-Windows-x64-v2.1.1-alpha.4.zip`，确认结果与
+   `Get-FileHash -Algorithm SHA256 .\CS-Scout-Windows-x64-v2.1.1.zip`，确认结果与
    校验文件中的 64 位散列完全相同；不同就不要运行。
 3. 不要下载 GitHub 自动生成的 `Source code (zip)` 或 `Source code (tar.gz)`；它们可能不含雷达地图。
 4. 右键 ZIP，选择“全部解压”。不要直接在压缩包预览窗口里运行程序。
