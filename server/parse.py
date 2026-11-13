@@ -121,7 +121,7 @@ def parse_positions(parser, classified, target_steamid):
             sample_ticks.append(t); tick_round[t] = r["official_num"]
     if not sample_ticks:
         return []
-    df = parser.parse_ticks(["X", "Y", "steamid"], ticks=sample_ticks)
+    df = parser.parse_ticks(["X", "Y", "yaw", "steamid"], ticks=sample_ticks)
     if not isinstance(df, pd.DataFrame):
         df = pd.DataFrame(df)
     required = {"tick", "steamid", "X", "Y"}
@@ -131,6 +131,7 @@ def parse_positions(parser, classified, target_steamid):
     df = df[df["steamid"] == sid].copy()
     df["X"] = pd.to_numeric(df["X"], errors="coerce")
     df["Y"] = pd.to_numeric(df["Y"], errors="coerce")
+    df["yaw"] = pd.to_numeric(df["yaw"], errors="coerce") if "yaw" in df.columns else np.nan
     df = df[np.isfinite(df["X"]) & np.isfinite(df["Y"])].copy()
     if df.empty:
         return []
@@ -141,8 +142,12 @@ def parse_positions(parser, classified, target_steamid):
     for num, grp in df.groupby("official_num"):
         grp = grp.sort_values("tick")
         fe = fe_by_num[num]
-        path = [[round((int(t) - fe) / config.TICK_RATE, 3), float(x), float(y)]
-                for t, x, y in zip(grp["tick"], grp["X"], grp["Y"])]
+        path = []
+        for t, x, y, yaw in zip(grp["tick"], grp["X"], grp["Y"], grp["yaw"]):
+            entry = [round((int(t) - fe) / config.TICK_RATE, 3), float(x), float(y)]
+            if pd.notna(yaw):
+                entry.append(float(yaw))
+            path.append(entry)
         m = meta_by_num[num]
         out.append({"official_num": int(num), "side": m["side"],
                     "rtype": m["rtype"], "path": path})
