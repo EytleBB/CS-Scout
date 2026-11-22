@@ -1,3 +1,5 @@
+import pytest
+
 from perfectworld_experiment.current_match import CurrentMatch, RawMatchPlayer
 from perfectworld_experiment.player_stats import PlayerStats, RadarDimension
 from perfectworld_experiment.prep_panel import build_prep_panel
@@ -7,13 +9,14 @@ MATE = "76561198000000001"
 ENEMY = "76561198000000002"
 
 
-def _player(player_id, *, steam_id=None, nickname=None, slot=None, team=None):
+def _player(player_id, *, steam_id=None, nickname=None, slot=None, team=None, troop=None):
     return RawMatchPlayer(
         player_id=player_id,
         steam_id=steam_id,
         nickname=nickname,
         slot_id=slot,
         team_id=team,
+        troop_team_id=troop,
     )
 
 
@@ -155,3 +158,126 @@ def test_missing_match_reports_unavailable():
 
     assert panel["available"] is False
     assert panel["teams"] == []
+
+
+def test_premade_parties_get_stable_ordinals_and_sizes():
+    players = (
+        _player("a", nickname="duo-a", slot=0, team=1, troop=7001),
+        _player("b", nickname="duo-b", slot=1, team=1, troop=7001),
+        _player("c", nickname="trio-a", slot=2, team=1, troop=7002),
+        _player("d", nickname="trio-b", slot=3, team=1, troop=7002),
+        _player("e", nickname="trio-c", slot=4, team=1, troop=7002),
+        _player("f", nickname="solo", slot=5, team=1, troop=None),
+    )
+    match = CurrentMatch(
+        match_id="m", map_name="de_dust2", players=players, extras={},
+    )
+
+    panel = build_prep_panel(match, own_steamid=None)
+
+    marks = [
+        (player["party"], player["party_size"])
+        for player in panel["teams"][0]["players"]
+    ]
+    assert marks == [(1, 2), (1, 2), (2, 3), (2, 3), (2, 3), (None, 1)]
+
+
+def test_party_guards_ignore_unset_and_oversized_groups():
+    players = (
+        _player("a", nickname="unset-a", slot=0, team=1, troop=0),
+        _player("b", nickname="unset-b", slot=1, team=1, troop=0),
+        _player("c", nickname="big-a", slot=2, team=1, troop=9001),
+        _player("d", nickname="big-b", slot=3, team=1, troop=9001),
+        _player("e", nickname="big-c", slot=4, team=1, troop=9001),
+        _player("f", nickname="big-d", slot=5, team=1, troop=9001),
+        _player("g", nickname="big-e", slot=6, team=1, troop=9001),
+        _player("h", nickname="big-f", slot=7, team=1, troop=9001),
+    )
+    match = CurrentMatch(
+        match_id="m", map_name="de_dust2", players=players, extras={},
+    )
+
+    panel = build_prep_panel(match, own_steamid=None)
+
+    marks = [
+        (player["party"], player["party_size"])
+        for player in panel["teams"][0]["players"]
+    ]
+    assert marks == [(None, 1)] * len(players)
+
+
+def test_party_is_scoped_to_one_team():
+    players = (
+        _player("a", nickname="ours", slot=0, team=1, troop=8001),
+        _player("b", nickname="theirs", slot=1, team=2, troop=8001),
+    )
+    match = CurrentMatch(
+        match_id="m", map_name="de_dust2", players=players, extras={},
+    )
+
+    panel = build_prep_panel(match, own_steamid=None)
+
+    marks = {
+        team["side"]: [(player["party"], player["party_size"]) for player in team["players"]]
+        for team in panel["teams"]
+    }
+    assert marks == {1: [(None, 1)], 2: [(None, 1)]}
+
+
+def test_team_aggregates_weight_map_rate_and_count_the_low_samples():
+    extras = {
+        OWN: _stats(
+            OWN, score=2100, adpr=80.0, season_rating=1.0,
+            perfect_power=3000, map_win_rate=4 / 10, map_total=10,
+            map_sample_low=False,
+        ),
+        MATE: _stats(
+            MATE, score=2200, adpr=90.0, season_rating=1.2,
+            perfect_power=4000, map_win_rate=1 / 2, map_total=2,
+            map_sample_low=True,
+        ),
+        ENEMY: _stats(ENEMY, score=1900),
+    }
+    players = (
+        _player(OWN, steam_id=OWN, nickname="me", slot=0, team=1),
+        _player(MATE, steam_id=MATE, nickname="mate", slot=1, team=1),
+        # Raw player with no platform data must not dilute the averages.
+        _player("ghost", nickname="ghost", slot=2, team=1),
+        _player(ENEMY, steam_id=ENEMY, nickname="enemy", slot=5, team=2),
+    )
+    match = CurrentMatch(
+        match_id="m", map_name="de_dust2", players=players, extras=extras,
+    )
+
+    panel = build_prep_panel(match, own_steamid=OWN)
+
+    ours = next(team for team in panel["teams"] if team["label"] == "ours")
+    assert ours["aggregates"] == {
+        "avg_score": 2150.0,
+        "avg_adpr": 85.0,
+        "avg_season_rating": pytest.approx(1.1),
+        "avg_perfect_power": 3500.0,
+        # Weighted by map sample: (4 + 1) / (10 + 2), not the mean of ratios.
+        "map_win_rate": pytest.approx(5 / 12),
+        "with_stats": 2,
+        "map_sample_low": 1,
+    }
+
+
+def test_team_aggregates_degrade_to_none_without_stats():
+    players = (_player("ghost", nickname="ghost", slot=0, team=1),)
+    match = CurrentMatch(
+        match_id="m", map_name="de_dust2", players=players, extras={},
+    )
+
+    panel = build_prep_panel(match, own_steamid=None)
+
+    assert panel["teams"][0]["aggregates"] == {
+        "avg_score": None,
+        "avg_adpr": None,
+        "avg_season_rating": None,
+        "avg_perfect_power": None,
+        "map_win_rate": None,
+        "with_stats": 0,
+        "map_sample_low": 0,
+    }

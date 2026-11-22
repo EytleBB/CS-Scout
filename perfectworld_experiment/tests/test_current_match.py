@@ -60,6 +60,8 @@ def test_log_codec_and_active_match_accumulator():
     assert [player.player_id for player in snapshot.current_match.players] == ["1001", "1002"]
     assert snapshot.current_match.players[1].steam_id == "76561198123456789"
     assert [player.team_id for player in snapshot.current_match.players] == [1, 2]
+    # troop_team_id is the premade party, kept separate from the side assignment.
+    assert [player.troop_team_id for player in snapshot.current_match.players] == [9001, 9002]
 
     # attach_id2, synchronized by the desktop client, is authoritative.
     state.consume(_encoded_line('DRIVE_SET_MATCH_ID {"matchId":"match-actual"}'))

@@ -748,6 +748,82 @@
   color: var(--muted);
   font-size: 13px;
 }
+.prep-name-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.prep-name-line strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prep-party {
+  flex: none;
+  padding: 2px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: #08131c;
+  white-space: nowrap;
+}
+.prep-party[hidden] { display: none; }
+.prep-party-1 { background: #e0a458; }
+.prep-party-2 { background: #7cc4a4; }
+.prep-party-3 { background: #b58bdb; }
+.prep-party-4 { background: #e07a7a; }
+.prep-party-5 { background: #6fb3d9; }
+.prep-compare {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border-color-light);
+  background: rgba(255, 255, 255, .02);
+}
+.prep-compare[hidden], .prep-insights[hidden] { display: none; }
+.prep-compare-item {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.prep-compare-label { color: var(--text); }
+.prep-compare-track {
+  display: flex;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, .06);
+}
+.prep-compare-side { display: block; height: 100%; }
+.prep-compare-ours { background: rgba(78, 168, 222, .85); }
+.prep-compare-theirs { background: rgba(222, 110, 110, .8); }
+.prep-compare-values {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.prep-insights {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border-color-light);
+  background: rgba(255, 255, 255, .02);
+}
+.prep-insight {
+  font-size: 12px;
+  color: var(--muted);
+}
+.prep-insight::before {
+  content: "·";
+  margin-right: 6px;
+  color: #4ea8de;
+}
 </style>
 </head>
 <body data-local-analysis="{{ 'true' if local_mode else 'false' }}">
@@ -865,6 +941,8 @@
        </div>
        <span id="prep-coverage" class="prep-coverage"></span>
       </header>
+      <div id="prep-compare" class="prep-compare" hidden></div>
+      <div id="prep-insights" class="prep-insights" hidden></div>
       <div id="prep-teams" class="prep-teams"></div>
      </section>
      <div id="view-toolbar" class="view-toolbar" hidden>

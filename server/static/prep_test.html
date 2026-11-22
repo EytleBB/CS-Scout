@@ -127,6 +127,82 @@
     color: var(--muted);
     font-size: 13px;
   }
+  .prep-name-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .prep-name-line strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .prep-party {
+    flex: none;
+    padding: 2px 6px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1.2;
+    color: #08131c;
+    white-space: nowrap;
+  }
+  .prep-party[hidden] { display: none; }
+  .prep-party-1 { background: #e0a458; }
+  .prep-party-2 { background: #7cc4a4; }
+  .prep-party-3 { background: #b58bdb; }
+  .prep-party-4 { background: #e07a7a; }
+  .prep-party-5 { background: #6fb3d9; }
+  .prep-compare {
+    display: grid;
+    gap: 6px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    border: 1px solid var(--border-color-light);
+    background: rgba(255, 255, 255, .02);
+  }
+  .prep-compare[hidden], .prep-insights[hidden] { display: none; }
+  .prep-compare-item {
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .prep-compare-label { color: var(--text); }
+  .prep-compare-track {
+    display: flex;
+    height: 8px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: rgba(255, 255, 255, .06);
+  }
+  .prep-compare-side { display: block; height: 100%; }
+  .prep-compare-ours { background: rgba(78, 168, 222, .85); }
+  .prep-compare-theirs { background: rgba(222, 110, 110, .8); }
+  .prep-compare-values {
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .prep-insights {
+    display: grid;
+    gap: 4px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    border: 1px solid var(--border-color-light);
+    background: rgba(255, 255, 255, .02);
+  }
+  .prep-insight {
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .prep-insight::before {
+    content: "·";
+    margin-right: 6px;
+    color: #4ea8de;
+  }
 </style>
 </head>
 <body>
@@ -148,6 +224,8 @@
       </div>
       <span id="prep-coverage" class="prep-coverage"></span>
     </header>
+    <div id="prep-compare" class="prep-compare" hidden></div>
+    <div id="prep-insights" class="prep-insights" hidden></div>
     <div id="prep-teams" class="prep-teams"></div>
   </section>
 
@@ -190,6 +268,49 @@
       };
     }
 
+    function aggregate(players) {
+      const counted = players.filter((item) => item.has_stats);
+      const average = (key) => {
+        const values = counted
+          .map((item) => item[key])
+          .filter((value) => value !== null && value !== undefined)
+          .map(Number)
+          .filter((value) => Number.isFinite(value));
+        return values.length
+          ? values.reduce((sum, value) => sum + value, 0) / values.length
+          : null;
+      };
+      let total = 0;
+      let wins = 0;
+      for (const item of counted) {
+        if (item.map_win_rate === null || item.map_win_rate === undefined || !item.map_total) continue;
+        total += item.map_total;
+        wins += item.map_win_rate * item.map_total;
+      }
+      return {
+        avg_score: average("score"),
+        avg_adpr: average("adpr"),
+        avg_season_rating: average("season_rating"),
+        avg_perfect_power: average("perfect_power"),
+        map_win_rate: total ? wins / total : null,
+        with_stats: counted.length,
+        map_sample_low: counted.filter((item) => item.map_sample_low).length
+      };
+    }
+
+    function markParties(players, groups) {
+      players.forEach((item) => { item.party = null; item.party_size = 1; });
+      groups.forEach((names, index) => {
+        const members = players.filter((item) => names.includes(item.nickname));
+        members.forEach((item) => { item.party = index + 1; item.party_size = members.length; });
+      });
+      return players;
+    }
+
+    function team(side, label, players) {
+      return { side, label, aggregates: aggregate(players), players };
+    }
+
     const FIXTURES = {
       full: {
         available: true,
@@ -198,26 +319,22 @@
         match_id: "9222775918321036300",
         map: "de_dust2",
         own_side: 1,
-        stats_coverage: { with_stats: 10, total: 10 },
+        stats_coverage: { with_stats: 9, total: 10 },
         teams: [
-          {
-            side: 1, label: "ours", players: [
-              player("N1ghtRaid", 2140, 86, 1.14, 0.62, 21, ["win","win","lose","win","win"], radar(72, 68, 61, 74, 55, 48, 30)),
-              player("Catmint", 2088, 79, 1.06, 0.51, 35, ["win","lose","win","lose","win"], radar(64, 71, 58, 49, 66, 52, 44)),
-              player("Sparrow_", 1976, 74, 0.98, 0.44, 18, ["lose","win","lose","win","lose"], radar(58, 60, 66, 41, 61, 55, 20)),
-              player("木子李", 2261, 91, 1.21, 0.58, 12, ["win","win","win","lose","win"], radar(78, 74, 69, 66, 70, 58, 62)),
-              player("Volt", 1834, 68, 0.91, 1.0, 1, ["lose","lose","win","lose","lose"], radar(49, 52, 47, 38, 44, 41, 15))
-            ]
-          },
-          {
-            side: 2, label: "theirs", players: [
-              player("Kaleido", 2310, 94, 1.26, 0.67, 27, ["win","win","lose","win","win"], radar(84, 81, 72, 79, 63, 66, 88)),
-              player("半个橘子", 2055, 81, 1.08, 0.48, 23, ["win","lose","win","win","lose"], radar(68, 66, 71, 55, 74, 50, 22)),
-              player("Drift--", 1922, 73, 0.95, 0.39, 31, ["lose","win","lose","lose","win"], radar(56, 63, 54, 47, 51, 44, 18)),
-              player("AimB0t", 2188, 87, 1.17, 0.55, 9, ["win","win","lose","win","lose"], radar(76, 88, 60, 63, 58, 47, 35)),
-              player("路人甲", null, null, null, null, null, [], {}, false)
-            ]
-          }
+          team(1, "ours", markParties([
+            player("N1ghtRaid", 2140, 86, 1.14, 0.62, 21, ["win","win","lose","win","win"], radar(72, 68, 61, 74, 55, 48, 30)),
+            player("Catmint", 2088, 79, 1.06, 0.51, 35, ["win","lose","win","lose","win"], radar(64, 71, 58, 49, 66, 52, 44)),
+            player("Sparrow_", 1976, 74, 0.98, 0.44, 18, ["lose","win","lose","win","lose"], radar(58, 60, 66, 41, 61, 55, 20)),
+            player("木子李", 2261, 91, 1.21, 0.58, 12, ["win","win","win","lose","win"], radar(78, 74, 69, 66, 70, 58, 62)),
+            player("Volt", 1834, 68, 0.91, 1.0, 1, ["lose","lose","win","lose","lose"], radar(49, 52, 47, 38, 44, 41, 15))
+          ], [["Catmint", "Sparrow_"], ["木子李", "Volt"]])),
+          team(2, "theirs", markParties([
+            player("Kaleido", 2310, 94, 1.26, 0.67, 27, ["win","win","lose","win","win"], radar(84, 81, 72, 79, 63, 66, 88)),
+            player("半个橘子", 2055, 81, 1.08, 0.48, 23, ["win","lose","win","win","lose"], radar(68, 66, 71, 55, 74, 50, 22)),
+            player("Drift--", 1922, 73, 0.95, 0.39, 31, ["lose","win","lose","lose","win"], radar(56, 63, 54, 47, 51, 44, 18)),
+            player("AimB0t", 2188, 87, 1.17, 0.55, 9, ["win","win","lose","win","lose"], radar(76, 88, 60, 63, 58, 47, 35)),
+            player("路人甲", null, null, null, null, null, [], {}, false)
+          ], [["Kaleido", "半个橘子"], ["Drift--", "AimB0t"]]))
         ],
         unassigned: []
       },
@@ -230,24 +347,20 @@
         own_side: null,
         stats_coverage: { with_stats: 2, total: 10 },
         teams: [
-          {
-            side: 1, label: "unknown", players: [
-              player("OnlyOne", 2011, 77, 1.01, 0.45, 14, ["win","lose"], radar(60, 58, 55, 50, 52, 45, 20)),
-              player("NoData_A", null, null, null, null, null, [], {}, false),
-              player("NoData_B", null, null, null, null, null, [], {}, false),
-              player("NoData_C", null, null, null, null, null, [], {}, false),
-              player("NoData_D", null, null, null, null, null, [], {}, false)
-            ]
-          },
-          {
-            side: 2, label: "unknown", players: [
-              player("Lonely", 1899, 69, 0.93, 1.0, 2, ["lose"], radar(48, 51, 44, 40, 46, 38, 12)),
-              player("NoData_E", null, null, null, null, null, [], {}, false),
-              player("NoData_F", null, null, null, null, null, [], {}, false),
-              player("NoData_G", null, null, null, null, null, [], {}, false),
-              player("NoData_H", null, null, null, null, null, [], {}, false)
-            ]
-          }
+          team(1, "unknown", markParties([
+            player("OnlyOne", 2011, 77, 1.01, 0.45, 14, ["win","lose"], radar(60, 58, 55, 50, 52, 45, 20)),
+            player("NoData_A", null, null, null, null, null, [], {}, false),
+            player("NoData_B", null, null, null, null, null, [], {}, false),
+            player("NoData_C", null, null, null, null, null, [], {}, false),
+            player("NoData_D", null, null, null, null, null, [], {}, false)
+          ], [["OnlyOne", "NoData_A"]])),
+          team(2, "unknown", [
+            player("Lonely", 1899, 69, 0.93, 1.0, 2, ["lose"], radar(48, 51, 44, 40, 46, 38, 12)),
+            player("NoData_E", null, null, null, null, null, [], {}, false),
+            player("NoData_F", null, null, null, null, null, [], {}, false),
+            player("NoData_G", null, null, null, null, null, [], {}, false),
+            player("NoData_H", null, null, null, null, null, [], {}, false)
+          ])
         ],
         unassigned: []
       },

@@ -1408,6 +1408,8 @@ def test_index_wires_the_pre_match_panel():
 
     assert 'id="prep-panel"' in html
     assert 'id="prep-teams"' in html
+    assert 'id="prep-compare"' in html
+    assert 'id="prep-insights"' in html
     assert "/static/prep.js" in html
     # The renderer must load before the app script that calls it.
     assert html.index("/static/prep.js") < html.index("/static/app.js")

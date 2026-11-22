@@ -35,6 +35,9 @@ class RawMatchPlayer:
     nickname: str | None = None
     slot_id: int | None = None
     team_id: int | None = None
+    # Premade-party id reported by the platform.  Left untouched so the prep
+    # panel can tell a duo/trio apart from solo players on the same side.
+    troop_team_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -148,10 +151,14 @@ def _parse_match(payload: Mapping[str, object], fallback_match_id: str | None) -
         nickname = str(nickname_value).strip() if nickname_value is not None else None
         # roll_team_id is the actual side assignment (1/2). troop_team_id is
         # the premade-party id and can differ for every player.
+        troop_value = row.get("troop_team_id")
+        if troop_value is None:
+            troop_value = row.get("troopTeamId")
+        troop_team_id = _integer(troop_value)
         team_id = _integer(
             row.get("roll_team_id")
             if row.get("roll_team_id") is not None
-            else row.get("troop_team_id")
+            else troop_value
         )
         slot_value = (
             row.get("slot_id")
@@ -165,6 +172,7 @@ def _parse_match(payload: Mapping[str, object], fallback_match_id: str | None) -
                 nickname=nickname or None,
                 slot_id=_integer(slot_value),
                 team_id=team_id,
+                troop_team_id=troop_team_id,
             )
         )
 

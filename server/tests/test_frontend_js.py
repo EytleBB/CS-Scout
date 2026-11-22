@@ -939,12 +939,12 @@ if (!empty.hidden || switcher.hidden || toolbar.hidden) throw new Error("result 
 
 def test_prep_panel_renders_both_teams_and_degrades_without_data():
     script = """
-const { renderPrepPanel } = require(__PREP_JS__);
+const { renderPrepPanel, buildPrepRow, prepSideLabel } = require(__PREP_JS__);
 
 function element(overrides = {}) {
   const node = {
-    hidden: false, textContent: "", title: "", children: [], dataset: {},
-    width: 0, height: 0, attributes: {},
+    hidden: false, textContent: "", title: "", className: "", children: [], dataset: {},
+    width: 0, height: 0, attributes: {}, style: {},
     setAttribute(name, value) { this.attributes[name] = String(value); },
     append(...nodes) { for (const item of nodes) this.children.push(item); },
     replaceChildren(...nodes) { this.children = nodes; },
@@ -962,6 +962,8 @@ function element(overrides = {}) {
 const elements = {
   "#prep-panel": element({ hidden: true }),
   "#prep-teams": element(),
+  "#prep-compare": element({ hidden: true }),
+  "#prep-insights": element({ hidden: true }),
   "#prep-map": element(),
   "#prep-meta": element(),
   "#prep-coverage": element(),
@@ -976,23 +978,38 @@ global.document = {
 const radar = { fire_power: { score: 65 }, marksmanship: { score: 50 }, first: { score: 70 } };
 renderPrepPanel({
   available: true, map: "de_dust2", fresh: true, own_side: 1,
-  stats_coverage: { with_stats: 2, total: 2 },
+  stats_coverage: { with_stats: 3, total: 4 },
   teams: [
-    { side: 1, label: "ours", players: [
-      { nickname: "me", has_stats: true, score: 2101, adpr: 83, season_rating: 1.09,
-        map_win_rate: 3 / 7, map_total: 7, map_sample_low: false,
-        recent_results: ["win", "lose", "win"], radar }
-    ] },
-    { side: 2, label: "theirs", players: [
-      { nickname: "enemy", has_stats: false, score: null, radar: {} }
-    ] }
+    { side: 1, label: "ours",
+      aggregates: { avg_score: 2101, avg_adpr: 83, avg_season_rating: 1.09,
+        avg_perfect_power: 3997, map_win_rate: 3 / 7, with_stats: 2, map_sample_low: 0 },
+      players: [
+        { nickname: "me", has_stats: true, score: 2101, adpr: 83, season_rating: 1.09,
+          map_win_rate: 3 / 7, map_total: 7, map_sample_low: false,
+          recent_results: ["win", "lose", "win"], radar, party: 1, party_size: 2 },
+        { nickname: "mate", has_stats: true, score: 2101, adpr: 83, season_rating: 1.09,
+          map_win_rate: 3 / 7, map_total: 7, map_sample_low: false,
+          recent_results: ["lose"], radar, party: 1, party_size: 2 }
+      ] },
+    { side: 2, label: "theirs",
+      aggregates: { avg_score: 1900, avg_adpr: 70, avg_season_rating: 0.95,
+        avg_perfect_power: 3000, map_win_rate: 1 / 3, with_stats: 1, map_sample_low: 1 },
+      players: [
+        { nickname: "enemy", has_stats: false, score: null, adpr: null,
+          season_rating: null, perfect_power: null, map_win_rate: null,
+          map_total: null, map_sample_low: false, recent_results: [], radar: {},
+          party: 2, party_size: 2 },
+        { nickname: "enemy2", has_stats: true, score: 1900, adpr: 70, season_rating: 0.95,
+          perfect_power: 3000, map_win_rate: 1 / 3, map_total: 2, map_sample_low: true,
+          recent_results: ["lose"], radar, party: 2, party_size: 2 }
+      ] }
   ]
 });
 
 if (elements["#prep-panel"].hidden) throw new Error("panel stayed hidden");
 if (elements["#prep-map"].textContent !== "de_dust2") throw new Error("map label missing");
 if (elements["#prep-meta"].textContent !== "日志实时") throw new Error("freshness missing");
-if (elements["#prep-coverage"].textContent !== "平台数据 2/2 人") throw new Error("coverage missing");
+if (elements["#prep-coverage"].textContent !== "平台数据 3/4 人") throw new Error("coverage missing");
 if (elements["#empty-state"].hidden !== true) throw new Error("empty state still visible");
 
 const teams = elements["#prep-teams"].children;
@@ -1009,11 +1026,71 @@ const rates = oursRow.children[2].children;
 if (!rates[0].textContent.includes("43%")) throw new Error(`map rate wrong: ${rates[0].textContent}`);
 if (rates[1].textContent !== "近 5 场 胜负胜") throw new Error(`form wrong: ${rates[1].textContent}`);
 
+const mateBadge = teams[0].children[1].children[1].children[1].children[0].children[1];
+if (mateBadge.textContent !== "2 人") throw new Error(`party size missing: ${mateBadge.textContent}`);
+if (!mateBadge.className.includes("prep-party-1")) throw new Error("party colour missing");
+
+const solo = buildPrepRow({ nickname: "solo", has_stats: false, party: null, party_size: 1 });
+const soloBadge = solo.children[1].children[0].children[1];
+if (!soloBadge.hidden) throw new Error("solo player must not get a party badge");
+
+if (prepSideLabel({ side: 2, label: "unknown" }) !== "B 队") {
+  throw new Error("unknown side must fall back to a neutral label");
+}
+if (prepSideLabel({ side: 1, label: "theirs" }) !== "对方") {
+  throw new Error("labelled side must use the friendly word");
+}
+
 const enemyRow = teams[1].children[1].children[0];
 if (enemyRow.dataset.hasStats !== "false") throw new Error("missing stats flag on enemy");
 
+const compare = elements["#prep-compare"];
+if (compare.hidden) throw new Error("compare strip stayed hidden");
+if (compare.children.length !== 5) throw new Error(`expected 5 compare rows, got ${compare.children.length}`);
+const scoreRow = compare.children[0];
+if (scoreRow.children[0].textContent !== "均分") throw new Error("compare label missing");
+const track = scoreRow.children[1];
+if (track.children[0].style.width !== "52.5%") throw new Error(`ours bar wrong: ${track.children[0].style.width}`);
+if (track.children[1].style.width !== "47.5%") throw new Error(`theirs bar wrong: ${track.children[1].style.width}`);
+if (scoreRow.children[2].textContent !== "2101 : 1900") {
+  throw new Error(`compare values wrong: ${scoreRow.children[2].textContent}`);
+}
+
+const insights = elements["#prep-insights"];
+if (insights.hidden) throw new Error("insights stayed hidden");
+if (insights.children.length !== 4) throw new Error(`expected 4 insights, got ${insights.children.length}`);
+const insightText = insights.children.map((item) => item.textContent).join("\\n");
+if (!insightText.includes("对方开黑：enemy、enemy2（2 人）")) throw new Error(`party insight wrong: ${insightText}`);
+if (!insightText.includes("均分差 201")) throw new Error(`score insight wrong: ${insightText}`);
+if (!insightText.includes("对方最高分：enemy2（1900）")) throw new Error(`top player insight wrong: ${insightText}`);
+if (!insightText.includes("对方 1 人无平台数据")) throw new Error(`coverage insight wrong: ${insightText}`);
+
+// Without a session the panel must not claim "对方" (D-2: never guess).
+renderPrepPanel({
+  available: true, map: "de_mirage", fresh: false,
+  stats_coverage: { with_stats: 1, total: 2 },
+  teams: [
+    { side: 1, label: "unknown",
+      aggregates: { avg_score: 2000, avg_adpr: null, avg_season_rating: null,
+        avg_perfect_power: null, map_win_rate: null, with_stats: 1, map_sample_low: 0 },
+      players: [{ nickname: "a", has_stats: true, score: 2000, party: null,
+        party_size: 1, recent_results: [], radar: {} }] },
+    { side: 2, label: "unknown",
+      aggregates: { avg_score: 1900, avg_adpr: null, avg_season_rating: null,
+        avg_perfect_power: null, map_win_rate: null, with_stats: 1, map_sample_low: 0 },
+      players: [{ nickname: "b", has_stats: true, score: 1900, party: null,
+        party_size: 1, recent_results: [], radar: {} }] }
+  ]
+});
+const neutral = elements["#prep-insights"].children
+  .map((item) => item.textContent).join("\\n");
+if (!neutral.includes("B 队 1900")) throw new Error(`neutral label missing: ${neutral}`);
+if (neutral.includes("对方")) throw new Error(`guessed a side: ${neutral}`);
+
 renderPrepPanel(null);
 if (!elements["#prep-panel"].hidden) throw new Error("panel did not hide without a match");
+if (!compare.hidden) throw new Error("compare did not hide without a match");
+if (!insights.hidden) throw new Error("insights did not hide without a match");
 """
     script = script.replace("__PREP_JS__", json.dumps(os.path.abspath(PREP_JS)))
     result = subprocess.run(
