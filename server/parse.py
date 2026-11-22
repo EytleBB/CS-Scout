@@ -63,14 +63,26 @@ def classify_rounds(parser, rounds, target_sids):
     """
     if not rounds:
         return []
-    target_sids = {str(sid) for sid in target_sids}
     fe_ticks = [r["fe_tick"] for r in rounds]
     df = parser.parse_ticks(["steamid", "team_name", "current_equip_value"], ticks=fe_ticks)
+    return classify_rounds_from_frame(rounds, df, target_sids)
+
+
+def classify_rounds_from_frame(rounds, df, target_sids):
+    """Same classification as :func:`classify_rounds` from an existing frame.
+
+    Sharing one freeze-end tick frame across several targets removes a full
+    ``parse_ticks`` pass per extra player in the same demo.
+    """
+    if not rounds:
+        return []
+    target_sids = {str(sid) for sid in target_sids}
     if not isinstance(df, pd.DataFrame):
         df = pd.DataFrame(df)
     required = {"tick", "steamid", "team_name", "current_equip_value"}
     if df.empty or not required.issubset(df.columns):
         return [{**r, "side": None, "rtype": None} for r in rounds]
+    df = df.copy()
     df["steamid"] = df["steamid"].astype(str)
     grouped = {tick: g for tick, g in df.groupby("tick")}
 
@@ -163,24 +175,37 @@ _PROJ_TYPE = {
 }
 _DUR = {"smoke": 18.0, "molotov": 7.0, "flash": 0.5, "he": 0.3, "decoy": 15.0}
 
-def parse_grenades_for_rounds(parser, classified, target_steamid):
-    sid = str(target_steamid)
-    active = [r for r in classified if r.get("side") and r.get("rtype")]
-    if not active:
-        return {}
+_GRENADE_COLUMNS = ("tick", "x", "y")
+
+
+def load_grenade_frame(parser):
+    """Decode every projectile once so several targets can share one pass."""
     g = parser.parse_grenades()
     try:
         if not isinstance(g, pd.DataFrame):
             g = pd.DataFrame(g)
     except (TypeError, ValueError):
-        return {}
+        return None
     required = {"tick", "steamid", "grenade_type", "grenade_entity_id", "x", "y"}
     if g.empty or not required.issubset(g.columns):
-        return {}
+        return None
     g = g.copy()
     g["steamid"] = g["steamid"].astype(str)
-    for column in ("tick", "x", "y"):
+    for column in _GRENADE_COLUMNS:
         g[column] = pd.to_numeric(g[column], errors="coerce")
+    return g
+
+
+def parse_grenades_for_rounds(parser, classified, target_steamid):
+    return grenades_from_frame(load_grenade_frame(parser), classified, target_steamid)
+
+
+def grenades_from_frame(g, classified, target_steamid):
+    """Select one target's grenades from an already decoded projectile frame."""
+    sid = str(target_steamid)
+    active = [r for r in classified if r.get("side") and r.get("rtype")]
+    if not active or g is None:
+        return {}
     g = g[(g["steamid"] == sid) & g["grenade_type"].isin(_PROJ_TYPE.keys())
           & np.isfinite(g["tick"]) & np.isfinite(g["x"]) & np.isfinite(g["y"])]
     if g.empty:
@@ -297,3 +322,52 @@ def parse_demo(path, target_steamid):
         # A single malformed demo must not abort the pipeline for every player.
         log.warning("parse_demo failed %s: %s", path, exc)
         return []
+
+
+def _merge_records(positions, nades, deaths):
+    return [
+        {"side": r["side"], "rtype": r["rtype"],
+         "official_num": r["official_num"], "path": r["path"],
+         "grenades": nades.get(r["official_num"], []),
+         "death_t": deaths.get(r["official_num"])}
+        for r in positions
+    ]
+
+
+def parse_demo_multi(path, steamids):
+    """Parse one demo for several targets in a single decode pass.
+
+    Several opponents frequently appear in the same match, so decoding the same
+    150 MB demo once per player repeats the parser construction, the event pass
+    and the projectile pass for every extra target.  This shares all three and
+    returns ``({steamid: records}, parser, events, {steamid: classified})``.
+    """
+    from demoparser2 import DemoParser
+
+    targets = [str(sid) for sid in dict.fromkeys(steamids)]
+    p = DemoParser(path)
+    evts = dict(p.parse_events(
+        ["round_freeze_end", "round_announce_match_start", "round_end", "player_death"],
+        other=["tick"],
+    ))
+    rounds = get_round_table(evts)
+    if not rounds:
+        log.warning("parse_demo_multi failed %s: no valid round table", path)
+        return {sid: [] for sid in targets}, p, evts, {}
+
+    fe_ticks = [r["fe_tick"] for r in rounds]
+    equip_frame = p.parse_ticks(
+        ["steamid", "team_name", "current_equip_value"], ticks=fe_ticks
+    )
+    grenade_frame = load_grenade_frame(p)
+
+    results: dict[str, list] = {}
+    classified_by: dict[str, list] = {}
+    for sid in targets:
+        classified = classify_rounds_from_frame(rounds, equip_frame, {sid})
+        classified_by[sid] = classified
+        positions = parse_positions(p, classified, sid)
+        nades = grenades_from_frame(grenade_frame, classified, sid)
+        deaths = parse_deaths_for_rounds(evts, classified, sid)
+        results[sid] = _merge_records(positions, nades, deaths)
+    return results, p, evts, classified_by

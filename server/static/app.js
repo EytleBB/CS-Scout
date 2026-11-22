@@ -944,8 +944,32 @@ function registerReplayView(viewKey, label, panel, player, color = "", accessibl
   return view;
 }
 
+// Pre-match panel rendering lives in static/prep.js so the live page and
+// the offline preview share one implementation.
+
+function applyPrepPanel(data) {
+  // prep.js may be missing when this module is loaded on its own.
+  if (typeof renderPrepPanel === "function") renderPrepPanel(data);
+}
+
+async function refreshPrepPanel(epoch = pollEpoch) {
+  if (activePlatform !== "perfectworld" || !localAnalysisEnabled()) {
+    applyPrepPanel(null);
+    return;
+  }
+  try {
+    const data = await requestJSON("/api/prep/current");
+    if (epoch !== pollEpoch) return;
+    applyPrepPanel(data);
+  } catch (error) {
+    if (epoch !== pollEpoch) return;
+    applyPrepPanel(null);
+  }
+}
+
 function resetResults() {
   for (const controller of playerFetchControllers) controller.abort();
+  if (activePlatform !== "perfectworld") applyPrepPanel(null);
   for (const player of allPlayers) {
     if (typeof player.destroy === "function") player.destroy();
   }
@@ -1216,6 +1240,7 @@ async function poll(epoch = pollEpoch) {
   const configVersionAtStart = fiveEConfigVersion;
   try {
     const perfectWorld = activePlatform === "perfectworld";
+    if (perfectWorld) void refreshPrepPanel(epoch);
     const localFiveE = activePlatform === "5e" && localAnalysisEnabled();
     const automaticMode = automaticScoutMode();
     const status = perfectWorld
@@ -1409,5 +1434,7 @@ if (typeof module !== "undefined") {
     selectPerfectWorldDirectory, selectFiveEExecutable,
     runFiveEAutomaticAnalysis, renderFiveETeamOptions,
     progressForStep, progressFromMessage, renderAnalysisProgress,
+    // renderPrepPanel itself lives in static/prep.js and stays global here.
+    refreshPrepPanel,
   };
 }

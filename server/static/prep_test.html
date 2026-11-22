@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>CS-Scout 赛前情报面板 · 预览</title>
+<!--
+  离线预览：直接双击打开即可，不需要 Flask。
+  样式与 server/templates/index.html 中的「赛前情报面板」一节保持一致，
+  改动面板样式时请同步两处（与 replay_test.html 的既有做法相同）。
+-->
+<style>
+  :root {
+    --text-color-primary: #f0f0f0;
+    --text-color-secondary: #a0a0a0;
+    --border-color-light: rgba(255, 255, 255, .1);
+    --text: var(--text-color-primary);
+    --muted: var(--text-color-secondary);
+    color-scheme: dark;
+  }
+  body {
+    margin: 0;
+    padding: 24px;
+    background: #141414;
+    color: var(--text);
+    font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif;
+  }
+  .preview-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 16px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .preview-bar button {
+    padding: 6px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color-light);
+    background: rgba(255, 255, 255, .06);
+    color: var(--text);
+    cursor: pointer;
+    font: inherit;
+  }
+  .preview-bar button:hover { background: rgba(255, 255, 255, .12); }
+
+  /* ── 赛前情报面板（与 index.html 同步） ── */
+  .prep-panel {
+    display: grid;
+    gap: 14px;
+    padding: 16px;
+    border-radius: 16px;
+    border: 1px solid var(--border-color-light);
+    background: rgba(255, 255, 255, .02);
+  }
+  .prep-panel[hidden] { display: none; }
+  .prep-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .prep-title { display: flex; align-items: baseline; gap: 10px; }
+  .prep-title strong { font-size: 18px; letter-spacing: .02em; }
+  .prep-meta, .prep-coverage { font-size: 12px; color: var(--muted); }
+  .prep-teams {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+  }
+  @media (max-width: 860px) {
+    .prep-teams { grid-template-columns: minmax(0, 1fr); }
+  }
+  .prep-team {
+    display: grid;
+    gap: 8px;
+    align-content: start;
+    padding: 10px;
+    border-radius: 12px;
+    border: 1px solid var(--border-color-light);
+    background: rgba(255, 255, 255, .02);
+  }
+  .prep-team[data-label="ours"] { border-color: rgba(78, 168, 222, .5); }
+  .prep-team[data-label="theirs"] { border-color: rgba(222, 110, 110, .45); }
+  .prep-team-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .prep-team-label { font-weight: 600; color: var(--text); letter-spacing: .04em; }
+  .prep-rows { display: grid; gap: 6px; }
+  .prep-row {
+    display: grid;
+    grid-template-columns: 52px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 8px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, .03);
+  }
+  .prep-row[data-has-stats="false"] { opacity: .55; }
+  .prep-radar { width: 52px; height: 52px; }
+  .prep-who { display: grid; gap: 2px; min-width: 0; }
+  .prep-who strong {
+    font-size: 13px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .prep-who span { font-size: 11px; color: var(--muted); }
+  .prep-rates {
+    display: grid;
+    gap: 2px;
+    justify-items: end;
+    font-size: 11px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .prep-rates b { color: var(--text); font-weight: 600; }
+  .prep-empty {
+    padding: 24px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+  <div class="preview-bar">
+    <strong>赛前情报面板预览</strong>
+    <span>（离线样例数据，非真实对局）</span>
+    <button type="button" data-fixture="full">10 人完整数据</button>
+    <button type="button" data-fixture="sparse">部分玩家无平台数据</button>
+    <button type="button" data-fixture="empty">未检测到对局</button>
+  </div>
+
+  <div id="empty-state" hidden></div>
+
+  <section id="prep-panel" class="prep-panel" aria-label="赛前情报面板" hidden>
+    <header class="prep-head">
+      <div class="prep-title">
+        <strong id="prep-map">—</strong>
+        <span id="prep-meta" class="prep-meta"></span>
+      </div>
+      <span id="prep-coverage" class="prep-coverage"></span>
+    </header>
+    <div id="prep-teams" class="prep-teams"></div>
+  </section>
+
+  <script src="prep.js"></script>
+  <script>
+    function radar(fire, aim, trade, entry, item, clutch, sniper) {
+      return {
+        fire_power: { score: fire, level: "B" },
+        marksmanship: { score: aim, level: "B" },
+        follow_up_shot: { score: trade, level: "C" },
+        first: { score: entry, level: "A" },
+        item: { score: item, level: "C" },
+        "1vn": { score: clutch, level: "C" },
+        sniper: { score: sniper, level: "D" }
+      };
+    }
+
+    function player(nickname, score, adpr, seasonRating, mapWin, mapTotal, results, dims, hasStats) {
+      const has = hasStats !== false;
+      return {
+        player_id: nickname,
+        steam_id: has ? "7656119834820" + String(1000 + score % 1000) : null,
+        nickname,
+        has_stats: has,
+        score: has ? score : null,
+        adpr: has ? adpr : null,
+        season_rating: has ? seasonRating : null,
+        map_win_rate: has ? mapWin : null,
+        map_total: has ? mapTotal : null,
+        map_sample_low: has ? mapTotal < 3 : false,
+        recent_win_rate: has ? 0.5 : null,
+        recent_results: has ? results : [],
+        recent_ratings: [],
+        season_win_rate: null,
+        season_total: null,
+        perfect_power: has ? 3000 + score % 900 : null,
+        rank_desc: null,
+        description: null,
+        radar: has ? dims : {}
+      };
+    }
+
+    const FIXTURES = {
+      full: {
+        available: true,
+        source: "perfectworld",
+        fresh: true,
+        match_id: "9222775918321036300",
+        map: "de_dust2",
+        own_side: 1,
+        stats_coverage: { with_stats: 10, total: 10 },
+        teams: [
+          {
+            side: 1, label: "ours", players: [
+              player("N1ghtRaid", 2140, 86, 1.14, 0.62, 21, ["win","win","lose","win","win"], radar(72, 68, 61, 74, 55, 48, 30)),
+              player("Catmint", 2088, 79, 1.06, 0.51, 35, ["win","lose","win","lose","win"], radar(64, 71, 58, 49, 66, 52, 44)),
+              player("Sparrow_", 1976, 74, 0.98, 0.44, 18, ["lose","win","lose","win","lose"], radar(58, 60, 66, 41, 61, 55, 20)),
+              player("木子李", 2261, 91, 1.21, 0.58, 12, ["win","win","win","lose","win"], radar(78, 74, 69, 66, 70, 58, 62)),
+              player("Volt", 1834, 68, 0.91, 1.0, 1, ["lose","lose","win","lose","lose"], radar(49, 52, 47, 38, 44, 41, 15))
+            ]
+          },
+          {
+            side: 2, label: "theirs", players: [
+              player("Kaleido", 2310, 94, 1.26, 0.67, 27, ["win","win","lose","win","win"], radar(84, 81, 72, 79, 63, 66, 88)),
+              player("半个橘子", 2055, 81, 1.08, 0.48, 23, ["win","lose","win","win","lose"], radar(68, 66, 71, 55, 74, 50, 22)),
+              player("Drift--", 1922, 73, 0.95, 0.39, 31, ["lose","win","lose","lose","win"], radar(56, 63, 54, 47, 51, 44, 18)),
+              player("AimB0t", 2188, 87, 1.17, 0.55, 9, ["win","win","lose","win","lose"], radar(76, 88, 60, 63, 58, 47, 35)),
+              player("路人甲", null, null, null, null, null, [], {}, false)
+            ]
+          }
+        ],
+        unassigned: []
+      },
+      sparse: {
+        available: true,
+        source: "perfectworld",
+        fresh: false,
+        match_id: "9222775918321036301",
+        map: "de_mirage",
+        own_side: null,
+        stats_coverage: { with_stats: 2, total: 10 },
+        teams: [
+          {
+            side: 1, label: "unknown", players: [
+              player("OnlyOne", 2011, 77, 1.01, 0.45, 14, ["win","lose"], radar(60, 58, 55, 50, 52, 45, 20)),
+              player("NoData_A", null, null, null, null, null, [], {}, false),
+              player("NoData_B", null, null, null, null, null, [], {}, false),
+              player("NoData_C", null, null, null, null, null, [], {}, false),
+              player("NoData_D", null, null, null, null, null, [], {}, false)
+            ]
+          },
+          {
+            side: 2, label: "unknown", players: [
+              player("Lonely", 1899, 69, 0.93, 1.0, 2, ["lose"], radar(48, 51, 44, 40, 46, 38, 12)),
+              player("NoData_E", null, null, null, null, null, [], {}, false),
+              player("NoData_F", null, null, null, null, null, [], {}, false),
+              player("NoData_G", null, null, null, null, null, [], {}, false),
+              player("NoData_H", null, null, null, null, null, [], {}, false)
+            ]
+          }
+        ],
+        unassigned: []
+      },
+      empty: null
+    };
+
+    function apply(name) {
+      renderPrepPanel(FIXTURES[name]);
+      const empty = document.querySelector("#empty-state");
+      if (empty) empty.hidden = Boolean(FIXTURES[name]);
+    }
+
+    document.querySelectorAll("[data-fixture]").forEach((button) => {
+      button.addEventListener("click", () => apply(button.dataset.fixture));
+    });
+
+    apply("full");
+  </script>
+</body>
+</html>

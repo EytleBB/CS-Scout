@@ -1278,3 +1278,136 @@ def test_analysis_publishes_each_player_result_incrementally(monkeypatch):
         with web_server.state_lock:
             web_server.state.clear()
             web_server.state.update(previous_state)
+
+
+# ── Perfect World automatic analysis: ownership monitor must not leak ────────
+
+
+def test_automatic_pwa_analysis_releases_slot_when_monitor_cannot_start(
+    monkeypatch, isolated_web_state
+):
+    """A failed ownership monitor must not leave the analysis slot claimed."""
+    monkeypatch.setattr(web_server.config, "LOCAL_MODE", True)
+    cancelled = []
+
+    class FakeService:
+        def request_analysis(self):
+            return {"accepted": True, "phase": "queued"}
+
+        def snapshot(self):
+            return {"phase": "queued"}
+
+        def cancel_analysis(self):
+            cancelled.append(True)
+            return {"accepted": True}
+
+    class ExplodingThread:
+        def __init__(self, *, target, args, daemon):
+            self.target, self.args = target, args
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(web_server, "_pwa_service", FakeService())
+    monkeypatch.setattr(web_server.threading, "Thread", ExplodingThread)
+
+    response = web_server.app.test_client().post("/api/pwa/analyze")
+
+    assert response.status_code == 503
+    assert cancelled, "the untracked analysis must be cancelled"
+    with web_server.state_lock:
+        assert web_server._pwa_analysis_token is None
+
+
+def test_pwa_ownership_monitor_times_out_and_releases_slot(isolated_web_state):
+    """A service stuck in 'queued' must not hold the analysis slot forever."""
+
+    class StuckService:
+        def snapshot(self):
+            return {"phase": "queued"}
+
+    with web_server.state_lock:
+        web_server._pwa_analysis_token = 11
+
+    worker = threading.Thread(
+        target=web_server._watch_pwa_analysis,
+        args=(StuckService(), 11),
+        kwargs={"timeout_s": 0.05},
+        daemon=True,
+    )
+    worker.start()
+    worker.join(2.0)
+
+    assert not worker.is_alive(), "the monitor must stop after its timeout"
+    with web_server.state_lock:
+        assert web_server._pwa_analysis_token is None
+
+
+# ── Pre-match panel endpoint ────────────────────────────────────────────────
+
+
+def test_prep_endpoint_returns_the_service_panel(monkeypatch, isolated_web_state):
+    monkeypatch.setattr(web_server.config, "LOCAL_MODE", True)
+    panel = {
+        "available": True,
+        "source": "perfectworld",
+        "match_id": "match-1",
+        "map": "de_dust2",
+        "own_side": 1,
+        "teams": [
+            {"side": 1, "label": "ours", "players": []},
+            {"side": 2, "label": "theirs", "players": []},
+        ],
+        "unassigned": [],
+        "stats_coverage": {"with_stats": 10, "total": 10},
+    }
+
+    class FakeService:
+        def snapshot(self):
+            return {"prep": dict(panel), "log": {"file_mtime": None}}
+
+    monkeypatch.setattr(web_server, "_pwa_service", FakeService())
+
+    response = web_server.app.test_client().get("/api/prep/current")
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["map"] == "de_dust2"
+    assert body["own_side"] == 1
+    assert [team["label"] for team in body["teams"]] == ["ours", "theirs"]
+    assert body["fresh"] is False
+
+
+def test_prep_endpoint_is_hidden_outside_local_mode(monkeypatch):
+    monkeypatch.setattr(web_server.config, "LOCAL_MODE", False)
+
+    assert web_server.app.test_client().get("/api/prep/current").status_code == 404
+
+
+def test_prep_endpoint_degrades_when_no_match_is_detected(
+    monkeypatch, isolated_web_state
+):
+    monkeypatch.setattr(web_server.config, "LOCAL_MODE", True)
+
+    class FakeService:
+        def snapshot(self):
+            return {"prep": None}
+
+    monkeypatch.setattr(web_server, "_pwa_service", FakeService())
+
+    response = web_server.app.test_client().get("/api/prep/current")
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["available"] is False
+    assert body["teams"] == []
+
+
+def test_index_wires_the_pre_match_panel():
+    html = web_server.app.test_client().get("/").get_data(as_text=True)
+
+    assert 'id="prep-panel"' in html
+    assert 'id="prep-teams"' in html
+    assert "/static/prep.js" in html
+    # The renderer must load before the app script that calls it.
+    assert html.index("/static/prep.js") < html.index("/static/app.js")

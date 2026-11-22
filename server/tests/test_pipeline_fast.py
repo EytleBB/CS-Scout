@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
 import pipeline
 
 
@@ -29,7 +30,7 @@ def test_fast_analysis_cancel_stops_before_new_downloads(tmp_path, monkeypatch):
         pipeline.run_fast(
             ["Alpha", "Bravo"],
             "de_mirage",
-            max_demos=2,
+            2,
             progress_cb=cancel_on_first_progress,
             cancel_event=cancel_event,
             download_workers=2,
@@ -40,14 +41,14 @@ def test_fast_analysis_cancel_stops_before_new_downloads(tmp_path, monkeypatch):
     assert not (tmp_path / "output" / "analysis_summary.json").exists()
 
 
-def test_normal_analysis_cancel_does_not_write_partial_summary(
-    tmp_path, monkeypatch
-):
+def test_normal_analysis_cancel_does_not_write_partial_summary(tmp_path, monkeypatch):
     cancel_event = threading.Event()
     monkeypatch.setattr(pipeline.config, "DEMO_DIR", str(tmp_path / "demos"))
     monkeypatch.setattr(pipeline.config, "OUTPUT_DIR", str(tmp_path / "output"))
     monkeypatch.setattr(
-        pipeline.api_client, "search_player", lambda name: ("alpha", name)
+        pipeline.api_client,
+        "search_player",
+        lambda name: ("alpha", name),
     )
 
     def cancel_during_discovery(domain, map_name, count):
@@ -55,12 +56,16 @@ def test_normal_analysis_cancel_does_not_write_partial_summary(
         return []
 
     monkeypatch.setattr(
-        pipeline.api_client, "get_demos_by_domain", cancel_during_discovery
+        pipeline.api_client,
+        "get_demos_by_domain",
+        cancel_during_discovery,
     )
 
     with pytest.raises(pipeline.AnalysisCancelled):
         pipeline.run(
-            ["Alpha"], "de_mirage", max_demos=1,
+            ["Alpha"],
+            "de_mirage",
+            1,
             cancel_event=cancel_event,
         )
 
@@ -75,10 +80,12 @@ def test_cdp_identity_hint_skips_ambiguous_username_search(monkeypatch, tmp_path
     monkeypatch.setattr(
         pipeline.api_client,
         "get_demos_by_domain",
-        lambda domain, map_name, count: [{
-            "match_code": "match-1",
-            "demo_url": "https://demo.example/match-1.zip",
-        }],
+        lambda domain, map_name, count: [
+            {
+                "match_code": "match-1",
+                "demo_url": "https://demo.example/match-1.zip",
+            }
+        ],
     )
     monkeypatch.setattr(pipeline.config, "DEMO_DIR", str(tmp_path / "demos"))
 
@@ -103,16 +110,20 @@ def test_cdp_identity_hint_skips_ambiguous_username_search(monkeypatch, tmp_path
 
 def test_discovery_reuses_steamid_from_gate_demo_detail(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        pipeline.api_client, "search_player", lambda name: ("alpha", name)
+        pipeline.api_client,
+        "search_player",
+        lambda name: ("alpha", name),
     )
     monkeypatch.setattr(
         pipeline.api_client,
         "get_demos_by_domain",
-        lambda domain, map_name, count: [{
-            "match_code": "match-1",
-            "demo_url": "https://demo.example/match-1.zip",
-            "steamid": "76561198000000001",
-        }],
+        lambda domain, map_name, count: [
+            {
+                "match_code": "match-1",
+                "demo_url": "https://demo.example/match-1.zip",
+                "steamid": "76561198000000001",
+            }
+        ],
     )
     monkeypatch.setattr(
         pipeline.api_client,
@@ -123,7 +134,11 @@ def test_discovery_reuses_steamid_from_gate_demo_detail(monkeypatch, tmp_path):
     )
 
     context, failure = pipeline._prepare_fast_player(
-        0, "Alpha", "de_mirage", 1, lambda *_args: None
+        0,
+        "Alpha",
+        "de_mirage",
+        1,
+        lambda *_args: None,
     )
 
     assert failure is None
@@ -132,7 +147,24 @@ def test_discovery_reuses_steamid_from_gate_demo_detail(monkeypatch, tmp_path):
 
 def test_incomplete_automatic_identity_never_falls_back_to_username_search(monkeypatch):
     def unexpected_search(_username):
-        raise AssertionError("incomplete automatic identity must not be searched by name")
+        raise AssertionError(
+            "incomplete automatic identity must not be searched by name"
+        )
+
+    monkeypatch.setattr(pipeline.api_client, "search_player", unexpected_search)
+
+    context, failure = pipeline._prepare_fast_player(
+        0,
+        "Duplicate Name",
+        "de_mirage",
+        3,
+        lambda *_args: None,
+        {"username": "Duplicate Name", "steamid": "76561198000000001"},
+        True,
+    )
+
+    assert context is None
+    assert "玩家标识不完整" in failure["reason"]
 
     monkeypatch.setattr(pipeline.api_client, "search_player", unexpected_search)
 
@@ -165,7 +197,7 @@ def _install_fast_pipeline_fakes(tmp_path, monkeypatch, demos_per_player=2):
     monkeypatch.setattr(
         pipeline,
         "_new_fast_parse_executor",
-        lambda workers: ThreadPoolExecutor(max_workers=workers),
+        lambda workers, cancel_event=None: ThreadPoolExecutor(max_workers=workers),
     )
     monkeypatch.setattr(
         pipeline.api_client,
@@ -211,7 +243,7 @@ def test_fast_mode_overlaps_download_and_parse_but_keeps_output_order(
     coordination_errors = []
     download_call_count = 0
 
-    def fake_download(match_code, demo_url, dest_dir, progress_cb=None):
+    def fake_download(match_code, demo_url, dest_dir, progress_cb=None, cancel_event=None):
         nonlocal download_call_count
         with counter_lock:
             call_index = download_call_count
@@ -342,7 +374,7 @@ def test_fast_mode_keeps_demo_offsets_when_an_earlier_parse_is_empty(
     monkeypatch.setattr(
         pipeline,
         "download_and_extract",
-        lambda match_code, demo_url, dest_dir, progress_cb=None: [
+        lambda match_code, demo_url, dest_dir, progress_cb=None, cancel_event=None: [
             str(tmp_path / f"{match_code}.dem")
         ],
     )
@@ -414,7 +446,7 @@ def test_fast_download_slots_are_fair_and_player_stages_do_not_regress(
     first_wave_ready = threading.Event()
     release_first_wave = threading.Event()
 
-    def fake_download(match_code, demo_url, dest_dir, progress_cb=None):
+    def fake_download(match_code, demo_url, dest_dir, progress_cb=None, cancel_event=None):
         with calls_lock:
             calls.append(match_code)
             if len(calls) >= 3:
@@ -492,7 +524,7 @@ def test_fast_download_slots_are_reused_when_other_players_fail_discovery(
     all_slots_used = threading.Event()
     release = threading.Event()
 
-    def fake_download(match_code, demo_url, dest_dir, progress_cb=None):
+    def fake_download(match_code, demo_url, dest_dir, progress_cb=None, cancel_event=None):
         calls.append(match_code)
         if len(calls) >= 3:
             all_slots_used.set()
@@ -547,7 +579,7 @@ def test_fast_mode_offset_failure_is_isolated_to_one_player(tmp_path, monkeypatc
     monkeypatch.setattr(
         pipeline,
         "download_and_extract",
-        lambda match_code, demo_url, dest_dir, progress_cb=None: [
+        lambda match_code, demo_url, dest_dir, progress_cb=None, cancel_event=None: [
             str(tmp_path / f"{match_code}.dem")
         ],
     )
@@ -598,7 +630,7 @@ def test_broken_parse_pool_rejects_players_without_aborting_scan(
     monkeypatch.setattr(
         pipeline,
         "download_and_extract",
-        lambda match_code, demo_url, dest_dir, progress_cb=None: [
+        lambda match_code, demo_url, dest_dir, progress_cb=None, cancel_event=None: [
             str(tmp_path / f"{match_code}.dem")
         ],
     )
@@ -614,7 +646,7 @@ def test_broken_parse_pool_rejects_players_without_aborting_scan(
             raise RuntimeError("process pool is broken")
 
     monkeypatch.setattr(
-        pipeline, "_new_fast_parse_executor", lambda workers: RejectingParsePool()
+        pipeline, "_new_fast_parse_executor", lambda workers, cancel_event=None: RejectingParsePool()
     )
 
     results, failed = pipeline.run_fast(
@@ -659,7 +691,7 @@ def test_concurrent_shared_match_is_downloaded_only_once(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pipeline, "_reserve_match_download_lock", tracked_reserve)
 
-    def fake_download(url, save_path, progress_cb=None):
+    def fake_download(url, save_path, progress_cb=None, cancel_event=None):
         nonlocal download_count
         with count_lock:
             download_count += 1

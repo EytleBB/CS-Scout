@@ -48,6 +48,10 @@ server/data/maps/
 .release-verify-*/
 /AGENTS.md
 
+# Read-only reference checkouts (study only — see reference/README.md)
+/reference/*
+!/reference/README.md
+
 # Locally built release assets (uploaded to GitHub Releases, not committed)
 /dist/
 

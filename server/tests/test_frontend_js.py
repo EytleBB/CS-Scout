@@ -8,6 +8,7 @@ import pytest
 
 NODE = shutil.which("node")
 REPLAY_JS = os.path.join(os.path.dirname(__file__), "..", "static", "replay.js")
+PREP_JS = os.path.join(os.path.dirname(__file__), "..", "static", "prep.js")
 APP_JS = os.path.join(os.path.dirname(__file__), "..", "static", "app.js")
 INDEX_HTML = os.path.join(os.path.dirname(__file__), "..", "templates", "index.html")
 pytestmark = pytest.mark.skipif(NODE is None, reason="Node.js is not installed")
@@ -926,6 +927,95 @@ if (draws[0].length !== before[0] || draws[1].length !== before[1] + 1 ||
 }}
 if (!empty.hidden || switcher.hidden || toolbar.hidden) throw new Error("result navigation visibility is wrong");
 """
+    result = subprocess.run(
+        [NODE, "-e", script],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_prep_panel_renders_both_teams_and_degrades_without_data():
+    script = """
+const { renderPrepPanel } = require(__PREP_JS__);
+
+function element(overrides = {}) {
+  const node = {
+    hidden: false, textContent: "", title: "", children: [], dataset: {},
+    width: 0, height: 0, attributes: {},
+    setAttribute(name, value) { this.attributes[name] = String(value); },
+    append(...nodes) { for (const item of nodes) this.children.push(item); },
+    replaceChildren(...nodes) { this.children = nodes; },
+    getContext() {
+      return {
+        clearRect() {}, beginPath() {}, arc() {}, stroke() {},
+        moveTo() {}, lineTo() {}, closePath() {}, fill() {}
+      };
+    },
+    get childElementCount() { return this.children.length; }
+  };
+  return Object.assign(node, overrides);
+}
+
+const elements = {
+  "#prep-panel": element({ hidden: true }),
+  "#prep-teams": element(),
+  "#prep-map": element(),
+  "#prep-meta": element(),
+  "#prep-coverage": element(),
+  "#empty-state": element({ hidden: false })
+};
+global.document = {
+  querySelector(selector) { return elements[selector] || null; },
+  querySelectorAll() { return []; },
+  createElement() { return element(); }
+};
+
+const radar = { fire_power: { score: 65 }, marksmanship: { score: 50 }, first: { score: 70 } };
+renderPrepPanel({
+  available: true, map: "de_dust2", fresh: true, own_side: 1,
+  stats_coverage: { with_stats: 2, total: 2 },
+  teams: [
+    { side: 1, label: "ours", players: [
+      { nickname: "me", has_stats: true, score: 2101, adpr: 83, season_rating: 1.09,
+        map_win_rate: 3 / 7, map_total: 7, map_sample_low: false,
+        recent_results: ["win", "lose", "win"], radar }
+    ] },
+    { side: 2, label: "theirs", players: [
+      { nickname: "enemy", has_stats: false, score: null, radar: {} }
+    ] }
+  ]
+});
+
+if (elements["#prep-panel"].hidden) throw new Error("panel stayed hidden");
+if (elements["#prep-map"].textContent !== "de_dust2") throw new Error("map label missing");
+if (elements["#prep-meta"].textContent !== "日志实时") throw new Error("freshness missing");
+if (elements["#prep-coverage"].textContent !== "平台数据 2/2 人") throw new Error("coverage missing");
+if (elements["#empty-state"].hidden !== true) throw new Error("empty state still visible");
+
+const teams = elements["#prep-teams"].children;
+if (teams.length !== 2) throw new Error(`expected 2 teams, got ${teams.length}`);
+if (teams[0].dataset.label !== "ours" || teams[1].dataset.label !== "theirs") {
+  throw new Error("team labels lost");
+}
+
+const oursRow = teams[0].children[1].children[0];
+if (oursRow.dataset.hasStats !== "true") throw new Error("stats flag missing");
+const facts = oursRow.children[1].children[1].textContent;
+if (!facts.includes("2101") || !facts.includes("ADR 83")) throw new Error(`facts wrong: ${facts}`);
+const rates = oursRow.children[2].children;
+if (!rates[0].textContent.includes("43%")) throw new Error(`map rate wrong: ${rates[0].textContent}`);
+if (rates[1].textContent !== "近 5 场 胜负胜") throw new Error(`form wrong: ${rates[1].textContent}`);
+
+const enemyRow = teams[1].children[1].children[0];
+if (enemyRow.dataset.hasStats !== "false") throw new Error("missing stats flag on enemy");
+
+renderPrepPanel(null);
+if (!elements["#prep-panel"].hidden) throw new Error("panel did not hide without a match");
+"""
+    script = script.replace("__PREP_JS__", json.dumps(os.path.abspath(PREP_JS)))
     result = subprocess.run(
         [NODE, "-e", script],
         capture_output=True,

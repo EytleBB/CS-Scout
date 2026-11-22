@@ -60,6 +60,11 @@ CACHE_CONTROL_PATHS = frozenset({
 CACHE_CONTROL_PREFIXES = ("/api/player/", "/api/pwa/player/", "/output/")
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
+# An ownerless Perfect World analysis permanently blocks every later request
+# with 409, so the ownership monitor must give the slot back even when the
+# service never reports a terminal phase.
+_PWA_MONITOR_TIMEOUT_S = 600.0
+
 log = logging.getLogger("web")
 logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s")
 
@@ -165,11 +170,21 @@ def _analysis_activity_locked():
     return False, None
 
 
-def _watch_pwa_analysis(service, token):
+def _watch_pwa_analysis(service, token, *, timeout_s=None):
+    """Hold the analysis slot until the service leaves its busy phases."""
+    if timeout_s is None:
+        timeout_s = _PWA_MONITOR_TIMEOUT_S
+    deadline = time.monotonic() + max(0.0, float(timeout_s))
     try:
         while True:
             snapshot = service.snapshot()
             if snapshot.get("phase") not in {"queued", "analyzing", "cancelling"}:
+                return
+            if time.monotonic() >= deadline:
+                log.warning(
+                    "Perfect World analysis ownership monitor timed out after %.0fs",
+                    timeout_s,
+                )
                 return
             threading.Event().wait(0.5)
     except Exception:
@@ -786,7 +801,39 @@ def api_pwa_analyze():
         ).start()
     except Exception:
         log.exception("Could not start Perfect World ownership monitor")
+        # Without an owner the claimed slot would answer every later request
+        # with 409, so drop the analysis and give the slot back immediately.
+        _release_pwa_analysis(token)
+        try:
+            service.cancel_analysis()
+        except Exception:
+            log.exception("Could not cancel the untracked Perfect World analysis")
+        return jsonify({
+            "error": "Perfect World analysis ownership monitor is unavailable",
+        }), 503
     return jsonify(queued), 200
+
+
+@app.route("/api/prep/current")
+def api_prep_current():
+    """Return the pre-match panel payload for the detected client match."""
+    if not _pwa_request_is_local():
+        abort(404)
+    service = _get_pwa_service(start=False)
+    snapshot = service.snapshot()
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+    panel = snapshot.get("prep")
+    if not isinstance(panel, dict):
+        from perfectworld_experiment.prep_panel import build_prep_panel
+
+        panel = build_prep_panel(None)
+
+    log_state = snapshot.get("log")
+    mtime = log_state.get("file_mtime") if isinstance(log_state, dict) else None
+    fresh = bool(mtime) and (time.time() - float(mtime)) <= 120.0
+    panel = {**panel, "fresh": fresh}
+    return jsonify(panel)
 
 
 @app.route("/api/pwa/player/<domain>")

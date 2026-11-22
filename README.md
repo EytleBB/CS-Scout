@@ -128,7 +128,7 @@ $env:CS_SCOUT_SECRET_KEY='replace-with-a-random-secret'
 | 环境变量 | 作用 | 默认值 |
 |---|---|---|
 | `CS_SCOUT_FAST_DOWNLOAD_WORKERS` | 并发 Demo 下载线程数 | `max(6, min(12, CPU×2))`，上限 32 |
-| `CS_SCOUT_FAST_PARSE_WORKERS` | 并行解析进程数 | CPU ≤ 2 时为 1，否则为 2，上限 16 |
+| `CS_SCOUT_FAST_PARSE_WORKERS` | 并行解析进程数 | `max(1, min(4, CPU//2))`（8 核及以上为 4），显式设置上限 16 |
 | `CS_SCOUT_FAST_PARSE_MEMORY_PER_WORKER_MB` | 每个解析进程预估内存，用于自动限流 | 2048 MB |
 | `CS_SCOUT_FAST_PARSE_MEMORY_RESERVE_MB` | 启动解析进程前为系统预留的可用内存 | 1024 MB |
 | `CS_SCOUT_DEMO_MAX_DOWNLOAD_MB` | 单个压缩 Demo 最大下载量 | 1024 MB |

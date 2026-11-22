@@ -1,6 +1,7 @@
 """CSAI 2.0 pipeline — parse opponent demos into per-player replay JSON."""
 import json
 import logging
+import math
 import ntpath
 import os
 import re
@@ -457,6 +458,11 @@ def cleanup_demos(demo_dir, limit_gb=None, target_gb=None, min_free_gb=None):
 class _TaskDiskBudget:
     """Concurrent-safe compressed-download and extraction reservations."""
 
+    # A 150 MB download reports progress every 64 KB, so measuring the whole
+    # demo directory per chunk serialised every concurrent download behind the
+    # budget lock. The size is cached and invalidated whenever bytes land.
+    _SIZE_TTL_S = 2.0
+
     def __init__(self, demo_dir):
         self.demo_dir = demo_dir
         self.download_limit = int(
@@ -468,9 +474,25 @@ class _TaskDiskBudget:
         self._download_consumed = 0
         self._download_reserved = 0
         self._workspace_reserved = 0
+        self._cache_size = None
+        self._cache_size_at = 0.0
+
+    def _storage_size_locked(self, *, force=False):
+        now = time.monotonic()
+        if (
+            force
+            or self._cache_size is None
+            or now - self._cache_size_at >= self._SIZE_TTL_S
+        ):
+            self._cache_size = _demo_storage_size(self.demo_dir)
+            self._cache_size_at = now
+        return self._cache_size
+
+    def _invalidate_size_locked(self):
+        self._cache_size = None
 
     def _check_storage_locked(self, additional, *, download_reserved=None):
-        cache_size = _demo_storage_size(self.demo_dir)
+        cache_size = self._storage_size_locked()
         # Existing on-disk partial bytes are already in cache_size. Only other
         # outstanding reservations plus the new prospective allocation are
         # added here.
@@ -526,6 +548,7 @@ class _TaskDiskBudget:
                 return
             token["finished"] = True
             self._download_reserved -= token["remaining"]
+            self._invalidate_size_locked()
             # Bytes acknowledged by progress remain consumed even when a
             # bad/partial archive is removed, so failures cannot bypass the cap.
 
@@ -539,6 +562,8 @@ class _TaskDiskBudget:
     def release_workspace(self, size):
         with self._lock:
             self._workspace_reserved = max(0, self._workspace_reserved - int(size))
+            # Extraction has landed new files on disk.
+            self._invalidate_size_locked()
 
 
 def _begin_task_storage():
@@ -581,7 +606,7 @@ def _finish_task_storage(budget):
 
 # ── Download + extract ────────────────────────────────────────────────────────
 
-def download_and_extract(match_id, demo_url, dest_dir, progress_cb=None):
+def download_and_extract(match_id, demo_url, dest_dir, progress_cb=None, cancel_event=None):
     """Download one match once, even when fast workers request it together."""
     try:
         match_id = api_client.validate_match_id(match_id)
@@ -593,13 +618,16 @@ def download_and_extract(match_id, demo_url, dest_dir, progress_cb=None):
     try:
         with lock_entry["lock"]:
             return _download_and_extract_once(
-                match_id, demo_url, dest_dir, progress_cb=progress_cb
+                match_id, demo_url, dest_dir,
+                progress_cb=progress_cb, cancel_event=cancel_event,
             )
     finally:
         _release_match_download_lock(match_id, lock_entry)
 
 
-def _download_and_extract_once(match_id, demo_url, dest_dir, progress_cb=None):
+def _download_and_extract_once(
+    match_id, demo_url, dest_dir, progress_cb=None, cancel_event=None
+):
     zip_path = None
     workspace_reservation = 0
     budget = _active_disk_budget
@@ -644,6 +672,7 @@ def _download_and_extract_once(match_id, demo_url, dest_dir, progress_cb=None):
                     if budget_progress is not None or progress_cb is not None
                     else None
                 ),
+                cancel_event=cancel_event,
             )
         finally:
             if budget is not None and budget_token is not None:
@@ -1104,7 +1133,7 @@ class _FastDownloadProgress:
         )
 
 
-def _download_fast_demo(context, demo_order, download_progress):
+def _download_fast_demo(context, demo_order, download_progress, cancel_event=None):
     demo = context["demos"][demo_order]
     try:
         return download_and_extract(
@@ -1112,11 +1141,97 @@ def _download_fast_demo(context, demo_order, download_progress):
             progress_cb=lambda downloaded, total: download_progress.update(
                 demo_order, downloaded, total
             ),
+            cancel_event=cancel_event,
         )
     finally:
         # A 404 or a cached/shared match is still completed work from the
         # task's point of view, even when no byte callback was emitted.
         download_progress.finish(demo_order)
+
+
+def _group_parse_targets(states, parse_covered, context, demo_order, dem_files):
+    """Split one finished download into ``(dem_file, targets, file_order)`` jobs.
+
+    Every player who lists the same ``match_code`` shares a single parse job per
+    extracted demo file, so a demo is decoded once instead of once per opponent.
+    Players keep their own ``demo_order`` because the shared match can sit at a
+    different index in each player's demo list.
+    """
+    match_code = context["demos"][demo_order]["match_code"]
+    groups = []
+    for file_order, dem_file in enumerate(dem_files):
+        covered = parse_covered.setdefault(dem_file, set())
+        targets = []
+        for other_index, other_state in states.items():
+            other_context = other_state["context"]
+            other_order = next(
+                (
+                    order
+                    for order, demo in enumerate(other_context["demos"])
+                    if demo.get("match_code") == match_code
+                ),
+                None,
+            )
+            if other_order is None or other_index in covered:
+                continue
+            covered.add(other_index)
+            targets.append((
+                other_index,
+                other_context["steamid"],
+                other_order,
+                file_order,
+                dem_file,
+            ))
+        if targets:
+            groups.append((dem_file, tuple(targets), file_order))
+    return groups
+
+
+def _parse_fast_demo_group_worker(dem_file, targets):
+    """Parse one demo once for every player who shares it.
+
+    ``targets`` holds ``(player_index, steamid, demo_order, file_order)`` tuples.
+    A single target delegates to the original single-player worker so the
+    all-solo case keeps exactly the previous behaviour and cost.
+    """
+    if len(targets) == 1:
+        player_index, steamid, demo_order, file_order, _dem_file = targets[0]
+        entry = _parse_fast_demo_worker(steamid, demo_order, file_order, dem_file)
+        return [{**entry, "player_index": player_index}]
+
+    steamids = [steamid for _index, steamid, _order, _file, _path in targets]
+    records_by = {}
+    stats_by = {}
+    try:
+        records_by, parser, events, classified_by = parse.parse_demo_multi(
+            dem_file, steamids
+        )
+    except Exception:
+        log.exception("Shared demo parse failed unexpectedly: %s", dem_file)
+        parser = None
+        events = None
+        classified_by = {}
+
+    if parser is not None and events is not None:
+        try:
+            stats_by = combat.parse_combat_stats_multi(
+                parser, events, steamids, classified_by
+            )
+        except Exception:
+            log.exception("Shared combat parse failed unexpectedly: %s", dem_file)
+            stats_by = {}
+
+    return [
+        {
+            "player_index": player_index,
+            "demo_order": demo_order,
+            "file_order": file_order,
+            "dem_file": dem_file,
+            "records": records_by.get(str(steamid)) or [],
+            "combat_stats": stats_by.get(str(steamid)),
+        }
+        for player_index, steamid, demo_order, file_order, _path in targets
+    ]
 
 
 def _parse_fast_demo_worker(steamid, demo_order, file_order, dem_file):
@@ -1262,28 +1377,135 @@ def _memory_safe_parse_workers(requested):
     return safe_workers
 
 
-def _new_fast_parse_executor(workers):
+def _parse_pool_shutdown_mode(cancel_event):
+    """Decide how the parse pool should be closed.
+
+    A cancelled run must not wait for already submitted parses: with two
+    workers and tens of queued demos that wait is measured in minutes. The
+    workers are terminated instead, which is safe because every demo file is
+    already on disk and player JSON is written atomically.
+    """
+    if cancel_event is not None and cancel_event.is_set():
+        return {"wait": False, "cancel_futures": True, "terminate": True}
+    return {"wait": True, "cancel_futures": False, "terminate": False}
+
+
+def _terminate_parse_workers(pool):
+    """Stop parsing workers without waiting for their current demo."""
+    terminated = 0
+    for process in list(getattr(pool, "_processes", {}).values()):
+        try:
+            process.terminate()
+            terminated += 1
+        except Exception:
+            log.debug("Could not terminate parsing worker", exc_info=True)
+    return terminated
+
+
+class _CancellableParsePool(ProcessPoolExecutor):
+    """Process pool that stops immediately once the run is cancelled."""
+
+    def __init__(self, *args, cancel_event=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._cancel_event = cancel_event
+
+    def shutdown(self, wait=True, *, cancel_futures=False):
+        mode = _parse_pool_shutdown_mode(self._cancel_event)
+        if not mode["terminate"]:
+            super().shutdown(wait=wait, cancel_futures=cancel_futures)
+            return
+        super().shutdown(wait=False, cancel_futures=True)
+        _terminate_parse_workers(self)
+
+
+def _new_fast_parse_executor(workers, cancel_event=None):
     """Use spawn so process creation is safe from Flask's background thread."""
-    return ProcessPoolExecutor(
+    return _CancellableParsePool(
         max_workers=workers,
         mp_context=multiprocessing.get_context("spawn"),
+        cancel_event=cancel_event,
+    )
+
+
+def _normalize_player_priorities(usernames, player_priorities):
+    """Validate optional priority weights, one float per username.
+
+    ``None`` is the documented default and keeps input order without noise.
+    A malformed list (wrong length, non-numeric or non-finite value) is
+    rejected as a whole with a single warning: scheduling must never silently
+    reorder work on partially-valid priorities.
+    """
+    if player_priorities is None:
+        return None
+    try:
+        values = list(player_priorities)
+    except TypeError:
+        log.warning(
+            "player_priorities must be a numeric sequence; using input order"
+        )
+        return None
+    if len(values) != len(usernames):
+        log.warning(
+            "player_priorities has %s entries for %s players; using input order",
+            len(values), len(usernames),
+        )
+        return None
+
+    normalized = []
+    for value in values:
+        if isinstance(value, bool):
+            log.warning(
+                "player_priorities contains a non-numeric value; using input order"
+            )
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError):
+            log.warning(
+                "player_priorities contains a non-numeric value; using input order"
+            )
+            return None
+        if not math.isfinite(number):
+            log.warning(
+                "player_priorities contains a non-finite value; using input order"
+            )
+            return None
+        normalized.append(number)
+    return normalized
+
+
+def _priority_download_order(usernames, player_priorities):
+    """Player indexes ordered by descending priority, stable on input order."""
+    priorities = _normalize_player_priorities(usernames, player_priorities)
+    if priorities is None:
+        return list(range(len(usernames)))
+    return sorted(
+        range(len(usernames)),
+        key=lambda index: (-priorities[index], index),
     )
 
 
 def _run_fast(
     usernames, map_name, max_demos=10, progress_cb=None, result_cb=None,
     download_workers=None, parse_workers=None, player_hints=None,
-    cancel_event=None,
+    cancel_event=None, player_priorities=None,
 ):
     """Run discovery, downloads and parsing concurrently.
 
-    Network and CPU pools are independent, so completed downloads begin parsing
-    while other demos are still in flight. Final output remains deterministic in
-    username/demo order even though progress and incremental results may finish
-    out of order.
+    Discovery runs in its own bounded pool, but downloads wait behind a
+    discovery barrier: only once every player has resolved (success or
+    failure) does scheduling start, so a finished download can group every
+    opponent who shares its match. Downloads are then started in
+    ``player_priorities`` order while a per-player demo-order count keeps the
+    rotation fair. Final output remains deterministic in username/demo order
+    even though progress and incremental results may finish out of order.
     """
     _raise_if_cancelled(cancel_event)
     total = len(usernames)
+    download_order = _priority_download_order(usernames, player_priorities)
+    priority_rank = {
+        player_index: rank for rank, player_index in enumerate(download_order)
+    }
     download_worker_count = _resolve_fast_workers(
         download_workers, config.FAST_DOWNLOAD_WORKERS, 32
     )
@@ -1374,13 +1596,15 @@ def _run_fast(
             max_workers=download_worker_count,
             thread_name_prefix="cs-scout-download",
         ) as download_pool,
-        _new_fast_parse_executor(parse_worker_count) as parse_pool,
+        _new_fast_parse_executor(parse_worker_count, cancel_event=cancel_event) as parse_pool,
     ):
-        initial_player_download_limit = max(
-            1,
-            (download_worker_count + max(1, total) - 1) // max(1, total),
-        )
+        # Discovery barrier: downloads are held until this reaches zero so
+        # every shared-demo opponent is visible to _group_parse_targets.
         preparations_remaining = total
+        # dem_file -> player indexes whose parse work is already scheduled. Lets
+        # one job cover every player who appears in the same demo.
+        parse_covered: dict[str, set[int]] = {}
+
 
         def submit_player_download(i):
             state = states[i]
@@ -1393,42 +1617,41 @@ def _run_fast(
                 context,
                 demo_order,
                 state["download_progress"],
+                cancel_event,
             )
             pending[download_future] = (
                 "download", i, (context, demo_order)
             )
 
-        def schedule_available_downloads(preferred=None):
+        def schedule_available_downloads():
+            """Fill free download slots once the discovery barrier has lifted.
+
+            Every player is ready at that point, so slots rotate by how many
+            downloads each player has already started. Priorities break ties
+            (and therefore fix the first wave order) without letting a
+            high-priority player monopolise the pool and starve the others.
+            """
+            if preparations_remaining > 0:
+                return
             active = sum(
                 state["downloads_inflight"] for state in states.values()
             )
-            if preparations_remaining > 0:
-                if preferred not in states:
-                    return
-                state = states[preferred]
-                while (
-                    active < download_worker_count
-                    and state["downloads_inflight"] < initial_player_download_limit
-                    and state["next_download_order"] < state["download_total"]
-                ):
-                    submit_player_download(preferred)
-                    active += 1
-                return
-
-            # Once every discovery has resolved (including failures), lend all
-            # unused slots to the least-loaded unfinished player. This keeps
-            # the first wave fair without slowing a scan where only one or two
-            # names have downloadable history.
             while active < download_worker_count:
                 candidates = [
-                    i for i, state in states.items()
-                    if state["next_download_order"] < state["download_total"]
+                    index for index in download_order
+                    if index in states
+                    and states[index]["next_download_order"]
+                    < states[index]["download_total"]
                 ]
                 if not candidates:
                     return
                 player_index = min(
                     candidates,
-                    key=lambda i: (states[i]["downloads_inflight"], i),
+                    key=lambda index: (
+                        states[index]["next_download_order"],
+                        priority_rank[index],
+                        index,
+                    ),
                 )
                 submit_player_download(player_index)
                 active += 1
@@ -1458,7 +1681,46 @@ def _run_fast(
                     cancel_pending()
                     raise AnalysisCancelled("分析已取消")
                 kind, i, payload = pending.pop(future)
-                touched_players.add(i)
+                if i is not None:
+                    touched_players.add(i)
+
+                if kind == "parse":
+                    targets = payload
+                    try:
+                        produced = future.result()
+                    except Exception:
+                        log.exception("Unexpected fast parse worker error")
+                        produced = []
+                    by_player = {}
+                    for entry in produced or []:
+                        if isinstance(entry, dict) and entry.get("player_index") is not None:
+                            by_player[entry["player_index"]] = entry
+                    for (
+                        target_index, _sid, t_order, t_file, t_path
+                    ) in targets:
+                        target_state = states[target_index]
+                        target_state["parse_pending"] -= 1
+                        target_state["parses_done"] += 1
+                        entry = by_player.get(target_index) or {
+                            "demo_order": t_order,
+                            "file_order": t_file,
+                            "dem_file": t_path,
+                            "records": [],
+                            "combat_stats": None,
+                        }
+                        target_state["entries"].append(entry)
+                        touched_players.add(target_index)
+                        if (
+                            target_state["downloads_done"]
+                            == target_state["download_total"]
+                        ):
+                            emit_progress(
+                                target_index,
+                                target_state["context"]["username"], 4,
+                                f"解析 demo {target_state['parses_done']}"
+                                f"/{target_state['download_total']}...",
+                            )
+                    continue
 
                 if kind == "prepare":
                     preparations_remaining -= 1
@@ -1491,7 +1753,7 @@ def _run_fast(
                     states[i]["download_progress"] = _FastDownloadProgress(
                         context, emit_progress
                     )
-                    schedule_available_downloads(i)
+                    schedule_available_downloads()
                     continue
 
                 state = states[i]
@@ -1502,6 +1764,10 @@ def _run_fast(
                     state["downloads_inflight"] -= 1
                     try:
                         dem_files = future.result() or []
+                    except api_client.DemoDownloadCancelled:
+                        # The operator cancelled mid-stream; stop the whole run
+                        # instead of waiting for the remaining downloads.
+                        raise AnalysisCancelled("分析已取消")
                     except Exception:
                         log.exception(
                             "Unexpected fast download error for %s demo %s",
@@ -1511,34 +1777,37 @@ def _run_fast(
                     if not isinstance(dem_files, (list, tuple)):
                         dem_files = []
                     state["downloaded_files"] += len(dem_files)
-                    for file_order, dem_file in enumerate(dem_files):
-                        state["parse_pending"] += 1
+                    for dem_file, targets, file_order in _group_parse_targets(
+                        states, parse_covered, context, demo_order, dem_files
+                    ):
+                        for target_index, _sid, _order, _file, _path in targets:
+                            states[target_index]["parse_pending"] += 1
                         try:
                             parse_future = parse_pool.submit(
-                                _parse_fast_demo_worker, context["steamid"],
-                                demo_order, file_order, dem_file,
+                                _parse_fast_demo_group_worker, dem_file, targets,
                             )
                         except Exception:
                             # A crashed/broken process pool rejects new work.
                             # Treat that demo as unavailable and keep draining
                             # other players instead of aborting the whole scan.
-                            state["parse_pending"] -= 1
                             log.exception(
                                 "Could not submit fast parse work: %s",
                                 dem_file,
                             )
-                            state["entries"].append({
-                                "demo_order": demo_order,
-                                "file_order": file_order,
-                                "dem_file": dem_file,
-                                "records": [],
-                                "combat_stats": None,
-                            })
+                            for target_index, _sid, t_order, t_file, _path in targets:
+                                target_state = states[target_index]
+                                target_state["parse_pending"] -= 1
+                                target_state["entries"].append({
+                                    "demo_order": t_order,
+                                    "file_order": t_file,
+                                    "dem_file": dem_file,
+                                    "records": [],
+                                    "combat_stats": None,
+                                })
+                                touched_players.add(target_index)
                             continue
-                        pending[parse_future] = (
-                            "parse", i, (demo_order, file_order, dem_file)
-                        )
-                    schedule_available_downloads(i)
+                        pending[parse_future] = ("parse", None, targets)
+                    schedule_available_downloads()
                     if (
                         state["downloads_done"] == state["download_total"]
                         and state["downloaded_files"] > 0
@@ -1548,27 +1817,6 @@ def _run_fast(
                             f"解析 demo {state['parses_done']}/{state['download_total']}...",
                         )
                     continue
-
-                demo_order, file_order, dem_file = payload
-                state["parse_pending"] -= 1
-                state["parses_done"] += 1
-                try:
-                    entry = future.result()
-                except Exception:
-                    log.exception("Unexpected fast parse worker error: %s", dem_file)
-                    entry = {
-                        "demo_order": demo_order,
-                        "file_order": file_order,
-                        "dem_file": dem_file,
-                        "records": [],
-                        "combat_stats": None,
-                    }
-                state["entries"].append(entry)
-                if state["downloads_done"] == state["download_total"]:
-                    emit_progress(
-                        i, context["username"], 4,
-                        f"解析 demo {state['parses_done']}/{state['download_total']}...",
-                    )
 
             for player_index in touched_players:
                 maybe_finalize(player_index)
@@ -1599,7 +1847,7 @@ def _run_fast(
 def run_fast(
     usernames, map_name, max_demos=10, progress_cb=None, result_cb=None,
     download_workers=None, parse_workers=None, player_hints=None,
-    cancel_event=None,
+    cancel_event=None, player_priorities=None,
 ):
     """Run the fast pipeline within one bounded demo-storage task."""
     budget = _begin_task_storage()
@@ -1610,6 +1858,7 @@ def run_fast(
             download_workers=download_workers, parse_workers=parse_workers,
             player_hints=player_hints,
             cancel_event=cancel_event,
+            player_priorities=player_priorities,
         )
     finally:
         _finish_task_storage(budget)

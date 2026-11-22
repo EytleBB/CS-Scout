@@ -111,13 +111,22 @@ def _worker_count(name, default, maximum):
     return max(1, min(maximum, value))
 
 
-# Fast mode keeps download and parse pressure independently bounded. Operators
-# with unusually fast storage/network or more RAM can raise these explicitly.
+def _default_parse_workers(cpu_count):
+    """Two cores per parser; never exceed four without an explicit override."""
+    return max(1, min(4, max(1, int(cpu_count)) // 2))
+
+
+# Fast mode keeps download and parse pressure independently bounded. Parse
+# fan-out scales with the CPU count (two cores per parser, clamped to 1..4) so
+# a many-core machine is not stuck at two parsers; the runtime memory gate in
+# pipeline._memory_safe_parse_workers() still caps it against available RAM.
+# Operators with unusually fast storage/network or more RAM can raise these
+# explicitly.
 _CPU_COUNT = max(1, os.cpu_count() or 1)
 FAST_DOWNLOAD_WORKERS = _worker_count(
     "CS_SCOUT_FAST_DOWNLOAD_WORKERS", max(6, min(12, _CPU_COUNT * 2)), 32
 )
-_DEFAULT_FAST_PARSE_WORKERS = 1 if _CPU_COUNT <= 2 else 2
+_DEFAULT_FAST_PARSE_WORKERS = _default_parse_workers(_CPU_COUNT)
 FAST_PARSE_WORKERS = _worker_count(
     "CS_SCOUT_FAST_PARSE_WORKERS", _DEFAULT_FAST_PARSE_WORKERS, 16
 )

@@ -2,8 +2,9 @@
 
 The monitor only observes the loopback Chrome DevTools endpoint exposed by the
 locally installed 5E client.  It never returns browser storage, cookies, or
-WebSocket payloads through the web API; only the detected match, map, and
-resolved roster are published.
+WebSocket payloads through the web API; only the detected match, map, resolved
+roster, and (when response capture is enabled) parsed 5E business HTTP response
+payloads are published.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from urllib.parse import urlparse
 import requests
 
 import api_client
+import fivee_capture
 import maps
 
 
@@ -44,6 +46,8 @@ MAX_SEEN_MATCHES = 100
 MATCH_CANDIDATE_TTL = 10 * 60
 FIVEE_CONFIG_FILENAME = "fivee-install.json"
 PLATFORM_USER_INFO_URL = "https://platform-api.5eplay.com/api/user/info"
+CAPTURE_ENV_VAR = "CS_SCOUT_5E_CAPTURE"
+MAX_CAPTURED_PAYLOADS = 20
 
 _UUID_RE = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
@@ -89,6 +93,12 @@ def _port_from_environment() -> int:
     except (TypeError, ValueError, OverflowError):
         value = DEFAULT_CDP_PORT
     return value if 1 <= value <= 65535 else DEFAULT_CDP_PORT
+
+
+def _capture_enabled_from_environment() -> bool:
+    return os.getenv(CAPTURE_ENV_VAR, "1").strip().casefold() not in {
+        "0", "false", "no", "off",
+    }
 
 
 def _unique_strings(values: Iterable[object]) -> list[str]:
@@ -1292,6 +1302,7 @@ class FiveEAutoScoutService:
         auto_launch: bool | None = None,
         http_session=None,
         websocket_module=None,
+        capture_responses: bool | None = None,
     ):
         self.max_demos = max(1, min(10, int(max_demos)))
         self.mode = mode if mode in {"normal", "fast"} else "normal"
@@ -1304,6 +1315,14 @@ class FiveEAutoScoutService:
         self._http = http_session or requests.Session()
         self._http_lock = threading.Lock()
         self._websocket_module = websocket_module
+        if capture_responses is None:
+            capture_responses = _capture_enabled_from_environment()
+        self.capture_responses = bool(capture_responses)
+        self._capture = (
+            fivee_capture.ResponseCapture() if self.capture_responses else None
+        )
+        self._capture_lock = threading.Lock()
+        self._capture_stats: dict[str, int] = {}
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -1356,6 +1375,10 @@ class FiveEAutoScoutService:
             "analysis_id": None,
             "updated_at": time.time(),
         }
+        if self._capture is not None:
+            self._capture_stats = self._capture.stats()
+            self._state["capture"] = dict(self._capture_stats)
+            self._state["captured_payloads"] = []
 
     def snapshot(self) -> dict[str, object]:
         with self._lock:
@@ -1919,6 +1942,28 @@ class FiveEAutoScoutService:
                 if thread.is_alive()
             }
 
+    def _handle_capture_message(self, message: dict, connection) -> None:
+        capture = self._capture
+        if capture is None:
+            return
+        with self._capture_lock:
+            methods = capture.on_message(message)
+            commands = capture.take_commands()
+            stats = capture.stats()
+            changed = bool(methods or commands or stats != self._capture_stats)
+            if not changed:
+                return
+            payloads = None
+            if stats["captured"] != self._capture_stats.get("captured", 0):
+                payloads = capture.results()["payloads"][-MAX_CAPTURED_PAYLOADS:]
+            self._capture_stats = stats
+            if payloads is None:
+                self._update(capture=stats)
+            else:
+                self._update(capture=stats, captured_payloads=payloads)
+        for command in commands:
+            connection.send(json.dumps(command))
+
     def _target_loop(self, target_id: str, ws_url: str) -> None:
         websocket_module = self._websocket()
         connection = None
@@ -1926,6 +1971,7 @@ class FiveEAutoScoutService:
         def handle_message(message: object) -> None:
             if not isinstance(message, dict):
                 return
+            self._handle_capture_message(message, connection)
             if message.get("method") != "Network.webSocketFrameReceived":
                 return
             response = message.get("params", {}).get("response", {})

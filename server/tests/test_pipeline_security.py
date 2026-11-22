@@ -19,7 +19,7 @@ def demo_root(tmp_path, monkeypatch):
 
 
 def _install_zip_download(monkeypatch, members):
-    def fake_download(url, save_path, progress_cb=None):
+    def fake_download(url, save_path, progress_cb=None, cancel_event=None):
         with zipfile.ZipFile(save_path, "w", zipfile.ZIP_DEFLATED) as archive:
             for name, data in members:
                 archive.writestr(name, data)

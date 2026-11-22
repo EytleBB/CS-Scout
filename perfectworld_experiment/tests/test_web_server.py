@@ -1,3 +1,6 @@
+import time
+from types import SimpleNamespace
+
 from perfectworld_experiment.web_server import AutoScoutService, create_app
 
 
@@ -65,7 +68,82 @@ def test_auto_scout_blocks_analysis_when_official_component_is_unavailable(
     assert result["accepted"] is False
     assert result["phase"] == "setup_required"
     assert result["error"] == "完美平台组件签名无效"
-    assert service.snapshot()["phase"] == "setup_required"
+    # A missing component blocks the analysis, but it must not erase the
+    # detected match: log-based detection works without the component.
+    assert service.snapshot()["phase"] == "awaiting_confirmation"
+    assert service.snapshot()["signer"]["ready"] is False
+
+
+def test_missing_component_keeps_detection_phase(monkeypatch):
+    monkeypatch.setattr(
+        "perfectworld_experiment.native_signer.get_dll_status",
+        lambda **_kwargs: {
+            "ready": False, "code": "not_found",
+            "message": "未找到完美平台组件", "path": None, "source": None,
+        },
+    )
+    service = AutoScoutService(max_demos=3)
+    service._update(phase="awaiting_confirmation")
+
+    signer = service.refresh_signer_status()
+
+    assert signer["ready"] is False
+    assert service.snapshot()["phase"] == "awaiting_confirmation"
+    assert service.snapshot()["signer"]["message"] == "未找到完美平台组件"
+
+
+def test_auto_scout_detects_matches_without_ready_component(monkeypatch):
+    """Log-based detection must not wait for the official component."""
+    monkeypatch.setattr(
+        "perfectworld_experiment.native_signer.get_dll_status",
+        lambda **_kwargs: {
+            "ready": False, "code": "not_found",
+            "message": "未找到完美平台组件", "path": None, "source": None,
+        },
+    )
+    local = SimpleNamespace(current_match=SimpleNamespace(
+        match_id="match-1", map_name="de_dust2", players=[object()],
+    ))
+    monkeypatch.setattr(
+        "perfectworld_experiment.web_server.wait_for_current_match",
+        lambda *_args, **_kwargs: local,
+    )
+
+    class FakeFollower:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def poll(self):
+            return False
+
+        def snapshot(self):
+            return local
+
+        def diagnostics(self):
+            return {"file_exists": False, "watching": None}
+
+    monkeypatch.setattr(
+        "perfectworld_experiment.web_server.LogFollower", FakeFollower,
+    )
+    monkeypatch.setattr(
+        "perfectworld_experiment.web_server.prepare_auto_state",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            players=[SimpleNamespace(nickname="Opponent")],
+        ),
+    )
+
+    service = AutoScoutService(max_demos=3)
+    service.start()
+    try:
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if service.snapshot()["phase"] == "awaiting_confirmation":
+                break
+            time.sleep(0.05)
+        assert service.snapshot()["phase"] == "awaiting_confirmation"
+        assert service.snapshot()["signer"]["ready"] is False
+    finally:
+        service.stop()
 
 
 def test_auto_scout_cancel_keeps_task_in_cancelling_until_worker_stops():
@@ -84,3 +162,22 @@ def test_auto_scout_cancel_keeps_task_in_cancelling_until_worker_stops():
     assert snapshot["phase"] == "cancelling"
     assert snapshot["targets"] == [{"username": "Opponent"}]
     assert snapshot["map"] == "de_mirage"
+
+
+def test_service_reports_log_directory_diagnostics(tmp_path):
+    """The panel must be able to explain a missing client log directory."""
+    service = AutoScoutService(max_demos=3, log_dir=tmp_path / "missing")
+    service.start()
+    try:
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if service.snapshot()["log"]["watching"]:
+                break
+            time.sleep(0.05)
+        log = service.snapshot()["log"]
+        assert log["file_exists"] is False
+        # The follower watches the nearest existing ancestor, so a log
+        # directory created later is picked up without a restart.
+        assert log["watching"] == str(tmp_path)
+    finally:
+        service.stop()

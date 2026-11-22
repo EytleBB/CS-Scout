@@ -63,6 +63,10 @@ class DemoDownloadTooLarge(ValueError):
     """A compressed demo exceeded the configured download limit."""
 
 
+class DemoDownloadCancelled(RuntimeError):
+    """The operator cancelled while a demo was still streaming."""
+
+
 def validate_domain(domain):
     """Return a filesystem-safe 5E domain or reject untrusted input."""
     if (
@@ -660,7 +664,28 @@ def _close_response(response):
         close()
 
 
-def download_demo(url, save_path, progress_cb=None):
+def _stream_chunks(response, output, max_bytes, progress_cb, cancel_event, total=None):
+    """Write the response body while honouring the download budget and cancel."""
+    downloaded = 0
+    for chunk in response.iter_content(chunk_size=65536):
+        if cancel_event is not None and cancel_event.is_set():
+            # Stop before persisting the in-flight chunk: the analysis is being
+            # torn down and the caller discards the partial archive.
+            raise DemoDownloadCancelled("demo download cancelled by the operator")
+        if not chunk:
+            continue
+        downloaded += len(chunk)
+        if downloaded > max_bytes:
+            raise DemoDownloadTooLarge(
+                f"compressed demo exceeds {config.DEMO_MAX_DOWNLOAD_MB:g} MB"
+            )
+        output.write(chunk)
+        if progress_cb:
+            progress_cb(downloaded, total)
+    return downloaded
+
+
+def download_demo(url, save_path, progress_cb=None, cancel_event=None):
     """Download one compressed demo with URL, redirect, and size controls.
 
     Redirects are deliberately handled here instead of by ``requests`` so
@@ -715,17 +740,9 @@ def download_demo(url, save_path, progress_cb=None):
             delete=False,
         ) as output:
             temp_path = output.name
-            for chunk in response.iter_content(chunk_size=65536):
-                if not chunk:
-                    continue
-                downloaded += len(chunk)
-                if downloaded > max_bytes:
-                    raise DemoDownloadTooLarge(
-                        f"compressed demo exceeds {config.DEMO_MAX_DOWNLOAD_MB:g} MB"
-                    )
-                output.write(chunk)
-                if progress_cb:
-                    progress_cb(downloaded, total)
+            downloaded = _stream_chunks(
+                response, output, max_bytes, progress_cb, cancel_event, total,
+            )
             if total and downloaded != total:
                 raise ValueError(
                     "downloaded size does not match Content-Length"

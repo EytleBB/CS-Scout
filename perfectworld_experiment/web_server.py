@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+import logging
 import os
 import re
 import threading
@@ -13,8 +14,9 @@ from flask import Flask, abort, jsonify, render_template, send_from_directory
 
 from . import native_signer
 from .auto_scout import prepare_auto_state, run_auto_state
-from .current_match import read_local_state, wait_for_current_match
+from .current_match import DEFAULT_LOG_DIR, LogFollower, wait_for_current_match
 from .pipeline import AnalysisCancelled, DEFAULT_OUTPUT_DIR
+from .prep_panel import build_prep_panel
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,12 +25,21 @@ MAPS_DIR = SERVER_DIR / "data" / "maps"
 ICONS_DIR = ROOT / "radar" / "icons"
 CORE_REPLAY_JS = SERVER_DIR / "static" / "replay.js"
 DOMAIN_RE = re.compile(r"pwa_765\d{14}\Z")
+log = logging.getLogger("pwa-web")
 
 
 class AutoScoutService:
-    def __init__(self, *, max_demos: int = 3, all_players: bool = False):
+    def __init__(
+        self,
+        *,
+        max_demos: int = 3,
+        all_players: bool = False,
+        log_dir: str | os.PathLike[str] | None = None,
+    ):
         self.max_demos = max_demos
         self.all_players = all_players
+        self._log_dir = log_dir
+        self._follower: LogFollower | None = None
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._analysis_requested = threading.Event()
@@ -57,6 +68,20 @@ class AutoScoutService:
                 "path": None,
                 "source": None,
             },
+            "log": {
+                "log_dir": None,
+                "watching": None,
+                "file": None,
+                "file_exists": False,
+                "file_size": 0,
+                "file_mtime": None,
+                "bytes_read": 0,
+                "lines_received": 0,
+                "partial_pending": False,
+                "last_error": None,
+                "log_source_lost": False,
+            },
+            "prep": build_prep_panel(None),
             "updated_at": time.time(),
         }
 
@@ -85,12 +110,9 @@ class AutoScoutService:
         with self._lock:
             phase = str(self._state.get("phase") or "waiting")
             self._state["signer"] = signer
-            if not signer["ready"] and phase in {
-                "waiting", "setup_required", "error", "awaiting_confirmation"
-            }:
-                self._state["phase"] = "setup_required"
-                self._state["message"] = str(signer["message"])
-            elif signer["ready"] and phase == "setup_required":
+            # A missing component only blocks demo download, not log-based
+            # detection, so it must never overwrite the detection phase.
+            if signer["ready"] and phase == "setup_required":
                 self._state["phase"] = "waiting"
                 self._state["message"] = "等待进入完美平台对局…"
             self._state["updated_at"] = time.time()
@@ -171,14 +193,35 @@ class AutoScoutService:
     def stop(self) -> None:
         self._stop.set()
 
+    def _publish_prep(self, local) -> None:
+        """Expose the pre-match panel payload for the current client match."""
+        try:
+            match = local.current_match if local is not None else None
+            session = getattr(local, "session", None) if local is not None else None
+            own_steamid = getattr(session, "account_steamid", None) if session else None
+            panel = build_prep_panel(match, own_steamid=own_steamid)
+        except Exception:
+            # A malformed payload must never kill the match watcher.
+            log.exception("Could not build the pre-match panel payload")
+            return
+        self._update(prep=panel)
+
     def _watch_loop(self) -> None:
+        follower = LogFollower(self._log_dir or DEFAULT_LOG_DIR)
+        self._follower = follower
         while not self._stop.is_set():
-            signer = self.refresh_signer_status()
-            if not signer["ready"]:
-                self._stop.wait(3.0)
-                continue
+            # Detection reads the client log only. The official component is
+            # needed for demo download, so a missing component must not stop
+            # the watcher from reporting the current match.
+            self.refresh_signer_status()
+            self._update(log=follower.diagnostics())
             try:
-                local = wait_for_current_match(timeout=3.0, poll_interval=0.5)
+                local = wait_for_current_match(
+                    self._log_dir or DEFAULT_LOG_DIR,
+                    timeout=3.0,
+                    poll_interval=0.5,
+                    follower=follower,
+                )
             except TimeoutError:
                 if self._last_match_id is None:
                     self._update(
@@ -209,6 +252,7 @@ class AutoScoutService:
                 self._stop.wait(2.0)
                 continue
 
+            self._publish_prep(local)
             self._update(
                 phase="detected",
                 message=f"已进入 {match.map_name}，正在识别对手…",
@@ -247,10 +291,11 @@ class AutoScoutService:
                     if self._analysis_requested.wait(0.5):
                         self._analysis_requested.clear()
                         break
-                    now = read_local_state()
-                    current = now.current_match
+                    follower.poll()
+                    current = follower.snapshot().current_match
                     if current is None or current.match_id != match.match_id:
                         match_ended = True
+                        self._publish_prep(None)
                         self._update(
                             phase="waiting",
                             message="等待进入下一场完美平台对局…",

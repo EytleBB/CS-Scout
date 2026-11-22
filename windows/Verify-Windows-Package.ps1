@@ -86,6 +86,7 @@ Assert-True ($PSVersionTable.PSVersion.Major -ge 5) "Use Windows PowerShell 5.1 
 $requiredWindowsFiles = @(
     "Install-CS-Scout.ps1", "Start-CS-Scout.ps1",
     "Install-CS-Scout.cmd", "Start-CS-Scout.cmd",
+    "Collect-Diagnostics.ps1", "Collect-Diagnostics.cmd",
     "README-PLAYER-ZH.md", "Windows-Privilege.ps1", "Verify-Windows-Package.ps1"
 )
 foreach ($fileName in $requiredWindowsFiles) {
@@ -126,6 +127,7 @@ foreach ($relativePath in @(
     "server\requirements-runtime.txt",
     "server\templates\index.html",
     "server\static\app.js",
+    "server\static\prep.js",
     "server\static\replay.js"
 )) {
     Assert-NonEmptyFile (Join-Path $root $relativePath) $relativePath
@@ -137,6 +139,8 @@ $perfectWorldRuntime = @(
     "perfectworld_experiment\demo_io.py",
     "perfectworld_experiment\native_signer.py",
     "perfectworld_experiment\pipeline.py",
+    "perfectworld_experiment\player_stats.py",
+    "perfectworld_experiment\prep_panel.py",
     "perfectworld_experiment\pwa_client.py",
     "perfectworld_experiment\pwa_protocol.py",
     "perfectworld_experiment\requirements.txt",
@@ -189,6 +193,7 @@ foreach ($relativePath in @(
     "server\requirements-runtime.txt",
     "server\templates\index.html",
     "server\static\app.js",
+    "server\static\prep.js",
     "server\static\replay.js",
     "server\static\logo.webp"
 )) {

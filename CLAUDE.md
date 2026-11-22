@@ -301,3 +301,14 @@ Always cast result to `pd.DataFrame` and cast `steamid` to `str`.
 | `server/data/maps/<map>/meta.json` | Coordinate transform `{pos_x,pos_y,scale}` |
 | `server/demos_opponents/` | Downloaded .dem files + `.demo_index.json` |
 | `server/output/` | `player_{domain}.json` + `analysis_summary.json` |
+
+## Read-only References (`reference/`)
+
+Third-party code kept for study only. **Never edit, patch, or import it** into the CS-Scout
+build, and never load it at runtime; re-implement what you need inside the main tree. `.gitignore`
+tracks only `reference/README.md`, so checkouts can never be committed. Details and the refresh
+command live in `reference/README.md`.
+
+| Directory | Upstream | Notes |
+|-----------|----------|-------|
+| `reference/cs-match-helper/` | `Bamlax/cs-match-helper` | Tauri 2 + Vue 3 desktop app (CS 匹配助手): 5E / Perfect World warmup match data, player stats, radar compare, DeepSeek pre-match analysis |

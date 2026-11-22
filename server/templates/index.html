@@ -664,7 +664,91 @@
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
   }
- </style>
+ /* 赛前情报面板 */
+.prep-panel {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 16px;
+  border: 1px solid var(--border-color-light);
+  background: rgba(255, 255, 255, .02);
+}
+.prep-panel[hidden] { display: none; }
+.prep-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.prep-title { display: flex; align-items: baseline; gap: 10px; }
+.prep-title strong { font-size: 18px; letter-spacing: .02em; }
+.prep-meta, .prep-coverage { font-size: 12px; color: var(--muted); }
+.prep-teams {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+@media (max-width: 860px) {
+  .prep-teams { grid-template-columns: minmax(0, 1fr); }
+}
+.prep-team {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid var(--border-color-light);
+  background: rgba(255, 255, 255, .02);
+}
+.prep-team[data-label="ours"] { border-color: rgba(78, 168, 222, .5); }
+.prep-team[data-label="theirs"] { border-color: rgba(222, 110, 110, .45); }
+.prep-team-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.prep-team-label { font-weight: 600; color: var(--text); letter-spacing: .04em; }
+.prep-rows { display: grid; gap: 6px; }
+.prep-row {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .03);
+}
+.prep-row[data-has-stats="false"] { opacity: .55; }
+.prep-radar { width: 52px; height: 52px; }
+.prep-who { display: grid; gap: 2px; min-width: 0; }
+.prep-who strong {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prep-who span { font-size: 11px; color: var(--muted); }
+.prep-rates {
+  display: grid;
+  gap: 2px;
+  justify-items: end;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.prep-rates b { color: var(--text); font-weight: 600; }
+.prep-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+</style>
 </head>
 <body data-local-analysis="{{ 'true' if local_mode else 'false' }}">
  <header class="app-header glass-panel">
@@ -773,6 +857,16 @@
        <strong id="empty-title">等待分析</strong>
       </div>
      </div>
+     <section id="prep-panel" class="prep-panel" aria-label="赛前情报面板" hidden>
+      <header class="prep-head">
+       <div class="prep-title">
+        <strong id="prep-map">—</strong>
+        <span id="prep-meta" class="prep-meta"></span>
+       </div>
+       <span id="prep-coverage" class="prep-coverage"></span>
+      </header>
+      <div id="prep-teams" class="prep-teams"></div>
+     </section>
      <div id="view-toolbar" class="view-toolbar" hidden>
       <nav id="view-switcher" class="view-switcher" role="group" aria-label="回放视图选择" hidden></nav>
       <div class="view-side-controls">
@@ -793,6 +887,7 @@
   </main>
  </div>
  <script src="/static/replay.js"></script>
+ <script src="/static/prep.js"></script>
  <script src="/static/app.js"></script>
 </body>
 </html>

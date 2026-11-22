@@ -119,6 +119,7 @@ function Assert-Package([string]$Root) {
         "server\requirements-runtime.txt",
         "server\templates\index.html",
         "server\static\app.js",
+        "server\static\prep.js",
         "server\static\replay.js"
     )
     foreach ($relativePath in $runtimeAssets) {
@@ -131,6 +132,8 @@ function Assert-Package([string]$Root) {
         "perfectworld_experiment\demo_io.py",
         "perfectworld_experiment\native_signer.py",
         "perfectworld_experiment\pipeline.py",
+        "perfectworld_experiment\player_stats.py",
+        "perfectworld_experiment\prep_panel.py",
         "perfectworld_experiment\pwa_client.py",
         "perfectworld_experiment\pwa_protocol.py",
         "perfectworld_experiment\requirements.txt",

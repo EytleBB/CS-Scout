@@ -10,10 +10,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from json import JSONDecodeError, JSONDecoder
 from pathlib import Path
+import codecs
 import os
 import re
 import time
 from typing import Iterable, Mapping
+
+from .player_stats import PlayerStats, parse_extra_info
 
 
 DEFAULT_LOG_DIR = Path(os.getenv("APPDATA", "")) / "Wmpvp" / "Log"
@@ -41,6 +44,9 @@ class CurrentMatch:
     players: tuple[RawMatchPlayer, ...]
     host_info: str | None = None
     zone_name: str | None = None
+    # Platform-computed pre-match statistics, keyed by SteamID.  The client
+    # ships these with the create-game payload, so no extra request is needed.
+    extras: Mapping[str, "PlayerStats"] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -178,6 +184,7 @@ def _parse_match(payload: Mapping[str, object], fallback_match_id: str | None) -
         players=tuple(players),
         host_info=_text_id(game_info.get("host_info") or game_info.get("hostInfo")),
         zone_name=_text_id(game_info.get("zone_name") or game_info.get("zoneName")),
+        extras=parse_extra_info(payload),
     )
 
 
@@ -256,6 +263,15 @@ class PerfectWorldLogState:
                     self.current_match = match
                     break
 
+    def invalidate_match(self) -> None:
+        """Drop the active match after the log was rewritten.
+
+        Session credentials survive because a rotated log still belongs to the
+        same signed-in client, while the previous match no longer exists.
+        """
+        self.current_match = None
+        self._synced_match_id = None
+
     def snapshot(self) -> LocalPerfectWorldState:
         session = self.session
         if session is None and self.account_steamid:
@@ -271,6 +287,193 @@ def find_log_files(log_dir: str | os.PathLike[str] = DEFAULT_LOG_DIR) -> list[Pa
         return []
     files = [path for path in directory.glob("pvpClient.*.log") if path.is_file()]
     return sorted(files, key=lambda path: (path.stat().st_mtime_ns, path.name))
+
+
+def _nearest_existing(path: Path) -> Path:
+    """Return the closest ancestor that exists, so a missing log dir is visible."""
+    current = path
+    while not current.exists():
+        parent = current.parent
+        if parent == current:
+            return current
+        current = parent
+    return current
+
+
+class LogFollower:
+    """Incrementally tail the rotating client log instead of re-reading it.
+
+    The desktop client keeps appending to ``pvpClient.*.log`` while a match is
+    running, so re-reading entire files on every poll costs more the longer the
+    client has been open.  This follower reads only the appended bytes, survives
+    log rotation and truncation, and reports why nothing is arriving.
+    """
+
+    def __init__(
+        self,
+        log_dir: str | os.PathLike[str] = DEFAULT_LOG_DIR,
+        *,
+        max_initial_files: int = 3,
+    ) -> None:
+        self.log_dir = Path(log_dir)
+        self.max_initial_files = max(1, int(max_initial_files))
+        self.state = PerfectWorldLogState()
+        self._path: Path | None = None
+        self._offset = 0
+        self._partial = ""
+        self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        self._prefix: bytes | None = None
+        self._primed = False
+        self._bytes_read = 0
+        self._lines_received = 0
+        self._last_error: str | None = None
+        self._source_lost = False
+        self._watching = _nearest_existing(self.log_dir)
+
+    def poll(self) -> bool:
+        """Consume whatever the client appended since the previous poll."""
+        files = find_log_files(self.log_dir)
+        if not files:
+            # The client was never started, or its log directory moved: keep
+            # watching so the panel can explain the wait instead of failing.
+            self._source_lost = self._path is not None
+            self._watching = _nearest_existing(self.log_dir)
+            return False
+
+        self._source_lost = False
+        self._watching = self.log_dir
+        if not self._primed:
+            self._primed = True
+            return self._prime(files)
+
+        newest = files[-1]
+        if newest != self._path:
+            # Daily rotation (or a fresh client run): start the new file at 0.
+            self._path = newest
+            self._offset = 0
+            self._prefix = None
+            self._reset_buffer()
+        return self._read_appended()
+
+    def snapshot(self) -> LocalPerfectWorldState:
+        return self.state.snapshot()
+
+    def diagnostics(self) -> dict[str, object]:
+        path = self._path
+        size = 0
+        mtime = None
+        if path is not None:
+            try:
+                stat = path.stat()
+                size = stat.st_size
+                mtime = stat.st_mtime
+            except OSError:
+                size = 0
+                mtime = None
+        return {
+            "log_dir": str(self.log_dir),
+            "watching": str(self._watching),
+            "file": str(path) if path is not None else None,
+            "file_exists": bool(path is not None and path.exists()),
+            "file_size": size,
+            "file_mtime": mtime,
+            "offset": self._offset,
+            "bytes_read": self._bytes_read,
+            "lines_received": self._lines_received,
+            "partial_pending": bool(self._partial),
+            "last_error": self._last_error,
+            "log_source_lost": self._source_lost,
+        }
+
+    def _prime(self, files: list[Path]) -> bool:
+        """Replay recent history once so a cold start still sees the live match."""
+        recent = files[-self.max_initial_files:]
+        consumed = False
+        for path in recent[:-1]:
+            self._reset_buffer()
+            consumed |= self._consume_range(path, 0, flush_tail=True)
+        self._path = recent[-1]
+        self._offset = 0
+        self._reset_buffer()
+        consumed |= self._consume_range(recent[-1], 0)
+        self._prefix = self._head_bytes(recent[-1])
+        return consumed
+
+    @staticmethod
+    def _head_bytes(path: Path, length: int = 64) -> bytes:
+        try:
+            with path.open("rb") as source:
+                return source.read(length)
+        except OSError:
+            return b""
+
+    def _reset_buffer(self) -> None:
+        self._partial = ""
+        self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
+
+    def _read_appended(self) -> bool:
+        path = self._path
+        if path is None:
+            return False
+        try:
+            with path.open("rb") as source:
+                prefix = source.read(64)
+                source.seek(0, os.SEEK_END)
+                size = source.tell()
+        except OSError as exc:
+            self._last_error = str(exc)
+            return False
+
+        # A restart truncates the file and rewrites it from the beginning, which
+        # can leave the same byte count.  The head we already consumed must stay
+        # untouched in an append-only log, so any change proves a rewrite.  The
+        # head also grows while the file is still shorter than the probe size,
+        # hence the overlap comparison.
+        if self._prefix is not None:
+            overlap = min(len(self._prefix), len(prefix))
+            if prefix[:overlap] != self._prefix[:overlap]:
+                self._offset = 0
+                self._reset_buffer()
+                self.state.invalidate_match()
+        if self._prefix is None or len(prefix) > len(self._prefix):
+            self._prefix = prefix[:64]
+        if size < self._offset:
+            self._offset = 0
+            self._reset_buffer()
+            self.state.invalidate_match()
+        return self._consume_range(path, self._offset)
+
+    def _consume_range(
+        self, path: Path, start: int, *, flush_tail: bool = False
+    ) -> bool:
+        try:
+            with path.open("rb") as source:
+                source.seek(start)
+                data = source.read()
+        except OSError as exc:
+            self._last_error = str(exc)
+            return False
+
+        self._last_error = None
+        if not data:
+            return False
+
+        self._bytes_read += len(data)
+        self._offset = start + len(data)
+        buffered = self._partial + self._decoder.decode(data)
+        lines = buffered.split("\n")
+        self._partial = lines.pop()
+        if flush_tail and self._partial:
+            # An older file cannot be mid-line, so its tail is a real record.
+            lines.append(self._partial)
+            self._partial = ""
+
+        consumed = False
+        for line in lines:
+            self.state.consume(line)
+            self._lines_received += 1
+            consumed = True
+        return consumed
 
 
 def read_local_state(
@@ -310,13 +513,18 @@ def wait_for_current_match(
     timeout: float | None = None,
     poll_interval: float = 1.0,
     max_log_idle: float = 120.0,
+    follower: LogFollower | None = None,
 ) -> LocalPerfectWorldState:
     """Wait until a fresh active match and an in-memory session are available."""
     started = time.monotonic()
+    if follower is None:
+        follower = LogFollower(log_dir)
     while True:
-        files = find_log_files(log_dir)
-        state = read_local_state(log_dir)
-        fresh = bool(files) and time.time() - files[-1].stat().st_mtime <= max_log_idle
+        follower.poll()
+        state = follower.snapshot()
+        diagnostics = follower.diagnostics()
+        mtime = diagnostics.get("file_mtime")
+        fresh = mtime is not None and time.time() - float(mtime) <= max_log_idle
         match = state.current_match
         if (
             fresh
